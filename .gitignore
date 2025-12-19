@@ -164,4 +164,4 @@ cython_debug/
 # MacOS
 .DS_Store
 .tmp*/
-.history/
+.history/.env
