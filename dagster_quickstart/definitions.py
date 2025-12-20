@@ -6,11 +6,11 @@ from dagster import (
     load_assets_from_modules,
 )
 from dagster_clickhouse.resources import ClickHouseResource
-from dagster_clickhouse.io_manager import clickhouse_io_manager
-from dagster_quickstart.assets import ingestion, metadata, calculations
+from dagster_clickhouse.io_manager import clickhouse_io_manager, passthrough_io_manager
+from dagster_quickstart.assets import ingestion, calculations, csv_loader
 
 
-all_assets = load_assets_from_modules([ingestion, metadata, calculations])
+all_assets = load_assets_from_modules([ingestion, calculations, csv_loader])
 
 # Define resources
 # ClickHouseResource is a ConfigurableResource, so we can instantiate it directly
@@ -18,6 +18,7 @@ all_assets = load_assets_from_modules([ingestion, metadata, calculations])
 resources = {
     "clickhouse": ClickHouseResource.from_config(),
     "io_manager": clickhouse_io_manager,
+    "passthrough_io_manager": passthrough_io_manager,
 }
 # Define jobs
 ingestion_job = define_asset_job(

@@ -58,6 +58,8 @@ pathlib_abc==0.5.2
 pex==2.59.5
 platformdirs==4.5.1
 pluggy==1.6.0
+polars==1.36.1
+polars-runtime-32==1.36.1
 prompt_toolkit==3.0.52
 propcache==0.4.1
 protobuf==6.33.2

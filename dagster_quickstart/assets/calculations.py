@@ -1,33 +1,45 @@
 """Derived series calculation assets with dependency awareness."""
 
-from typing import Dict, Any, List
-from datetime import datetime
+from typing import List
 import pandas as pd
-import numpy as np
 from dagster import (
     asset,
     AssetExecutionContext,
+    AssetKey,
     Config,
     MetadataValue,
-    multi_asset,
-    AssetOut,
-    Output,
 )
 from dagster_clickhouse.resources import ClickHouseResource
 from database.meta_series import MetaSeriesManager
 from database.dependency import DependencyManager, CalculationLogManager
-from database.models import CalculationLogBase, CalculationStatus
+
+from dagster_quickstart.utils.helpers import (
+    load_series_data_from_clickhouse,
+    get_or_validate_meta_series,
+    create_calculation_log,
+    update_calculation_log_on_success,
+    update_calculation_log_on_error,
+)
+from dagster_quickstart.utils.exceptions import (
+    MetaSeriesNotFoundError,
+    CalculationError,
+)
+from dagster_quickstart.utils.constants import (
+    CALCULATION_TYPES,
+    DEFAULT_SMA_WINDOW,
+    DEFAULT_WEIGHT_DIVISOR,
+)
 
 
 class CalculationConfig(Config):
     """Configuration for derived series calculation."""
 
-    derived_series_code: str
-    formula: str  # e.g., "parent1 * 0.6 + parent2 * 0.4"
-    input_series_codes: List[str]
+    derived_series_code: str = "COMPOSITE_001"
+    formula: str = "parent1 * 0.5 + parent2 * 0.5"  # e.g., "parent1 * 0.6 + parent2 * 0.4"
+    input_series_codes: List[str] = []  # List of input series codes
 
 
-@asset
+@asset(kinds=["source"])
 def customers() -> str:
     return "https://raw.githubusercontent.com/dbt-labs/jaffle-shop-classic/refs/heads/main/seeds/raw_customers.csv"
 
@@ -36,6 +48,14 @@ def customers() -> str:
 @asset(
     group_name="calculations",
     description="Calculate a simple moving average derived series",
+    deps=[
+        AssetKey("ingest_bloomberg_data"),
+        AssetKey("ingest_lseg_data"),
+        AssetKey("ingest_hawkeye_data"),
+        AssetKey("ingest_ramp_data"),
+        AssetKey("ingest_onetick_data"),
+    ],  # Depends on ingestion assets completing first
+    kinds=["pandas","clickhouse"],
 )
 def calculate_sma_series(
     context: AssetExecutionContext,
@@ -50,46 +70,45 @@ def calculate_sma_series(
     calc_manager = CalculationLogManager(clickhouse)
 
     # Get derived series metadata
-    derived_series = meta_manager.get_meta_series_by_code(config.derived_series_code)
-    if not derived_series:
-        raise ValueError(f"Derived series {config.derived_series_code} not found")
+    derived_series = get_or_validate_meta_series(
+        meta_manager, config.derived_series_code, context, raise_if_not_found=True
+    )
+    
+    if derived_series is None:
+        raise MetaSeriesNotFoundError(
+            f"Derived series {config.derived_series_code} not found"
+        )
 
     # Get parent dependencies
     parent_deps = dep_manager.get_parent_dependencies(derived_series["series_id"])
 
     if not parent_deps:
-        raise ValueError(f"No parent dependencies found for {config.derived_series_code}")
+        raise CalculationError(
+            f"No parent dependencies found for {config.derived_series_code}"
+        )
 
     # Start calculation log
-    calc_log = CalculationLogBase(
-        series_id=derived_series["series_id"],
-        calculation_type="SMA",
-        status=CalculationStatus.RUNNING,
-        input_series_ids=[dep["parent_series_id"] for dep in parent_deps],
+    input_series_ids = [dep["parent_series_id"] for dep in parent_deps]
+    calc_id = create_calculation_log(
+        calc_manager,
+        derived_series["series_id"],
+        CALCULATION_TYPES["SMA"],
+        config.formula,
+        input_series_ids,
         parameters=config.formula,
-        formula=config.formula,
-        execution_start=datetime.now(),
     )
-    calc_id = calc_manager.create_calculation_log(calc_log)
 
     try:
         # Load parent series data
         all_data = []
         for dep in parent_deps:
             parent_id = dep["parent_series_id"]
-            query = """
-            SELECT timestamp, value
-            FROM valueData
-            WHERE series_id = {series_id:UInt32}
-            ORDER BY timestamp
-            """
-            result = clickhouse.execute_query(query, parameters={"series_id": parent_id})
-            if hasattr(result, "result_rows") and result.result_rows:
-                df = pd.DataFrame(result.result_rows, columns=["timestamp", "value"])
+            df = load_series_data_from_clickhouse(clickhouse, parent_id)
+            if df is not None:
                 all_data.append(df)
 
         if not all_data:
-            raise ValueError("No parent data found")
+            raise CalculationError("No parent data found")
 
         # Merge all parent series on timestamp
         merged = all_data[0]
@@ -99,7 +118,11 @@ def calculate_sma_series(
             merged = merged.drop(columns=[col for col in merged.columns if col.endswith("_new")])
 
         # Calculate SMA (assuming formula contains window size, e.g., "SMA_20")
-        window = int(config.formula.split("_")[-1]) if "_" in config.formula else 20
+        window = (
+            int(config.formula.split("_")[-1])
+            if "_" in config.formula
+            else DEFAULT_SMA_WINDOW
+        )
         merged["value"] = merged["value"].rolling(window=window, min_periods=1).mean()
 
         # Prepare output
@@ -112,12 +135,7 @@ def calculate_sma_series(
         )
 
         # Update calculation log
-        calc_manager.update_calculation_log(
-            calculation_id=calc_id,
-            status=CalculationStatus.COMPLETED,
-            execution_end=datetime.now(),
-            rows_processed=len(output_df),
-        )
+        update_calculation_log_on_success(calc_manager, calc_id, len(output_df))
 
         context.add_output_metadata(
             {
@@ -131,18 +149,21 @@ def calculate_sma_series(
 
     except Exception as e:
         # Update calculation log with error
-        calc_manager.update_calculation_log(
-            calculation_id=calc_id,
-            status=CalculationStatus.FAILED,
-            execution_end=datetime.now(),
-            error_message=str(e),
-        )
-        raise
+        update_calculation_log_on_error(calc_manager, calc_id, str(e))
+        raise CalculationError(f"Calculation failed: {e}") from e
 
 
 @asset(
     group_name="calculations",
     description="Calculate a weighted composite derived series",
+    deps=[
+        AssetKey("ingest_bloomberg_data"),
+        AssetKey("ingest_lseg_data"),
+        AssetKey("ingest_hawkeye_data"),
+        AssetKey("ingest_ramp_data"),
+        AssetKey("ingest_onetick_data"),
+    ],  # Depends on ingestion assets completing first
+    kinds=["pandas","clickhouse"],
 )
 def calculate_weighted_composite(
     context: AssetExecutionContext,
@@ -157,55 +178,47 @@ def calculate_weighted_composite(
     calc_manager = CalculationLogManager(clickhouse)
 
     # Get derived series
-    derived_series = meta_manager.get_meta_series_by_code(config.derived_series_code)
-    if not derived_series:
-        raise ValueError(f"Derived series {config.derived_series_code} not found")
+    derived_series = get_or_validate_meta_series(
+        meta_manager, config.derived_series_code, context, raise_if_not_found=True
+    )
 
     # Get parent dependencies with weights
     parent_deps = dep_manager.get_parent_dependencies(derived_series["series_id"])
 
     if len(parent_deps) < 2:
-        raise ValueError("Weighted composite requires at least 2 parent series")
+        raise CalculationError("Weighted composite requires at least 2 parent series")
 
     # Start calculation log
-    calc_log = CalculationLogBase(
-        series_id=derived_series["series_id"],
-        calculation_type="WEIGHTED_COMPOSITE",
-        status=CalculationStatus.RUNNING,
-        input_series_ids=[dep["parent_series_id"] for dep in parent_deps],
+    input_series_ids = [dep["parent_series_id"] for dep in parent_deps]
+    calc_id = create_calculation_log(
+        calc_manager,
+        derived_series["series_id"],
+        CALCULATION_TYPES["WEIGHTED_COMPOSITE"],
+        config.formula,
+        input_series_ids,
         parameters=config.formula,
-        formula=config.formula,
-        execution_start=datetime.now(),
     )
-    calc_id = calc_manager.create_calculation_log(calc_log)
 
     try:
         # Load all parent series
         parent_data = {}
         for dep in parent_deps:
             parent_id = dep["parent_series_id"]
-            weight = dep.get("weight", 1.0 / len(parent_deps))
+            weight = dep.get("weight", DEFAULT_WEIGHT_DIVISOR / len(parent_deps))
 
-            query = """
-            SELECT timestamp, value
-            FROM valueData
-            WHERE series_id = {series_id:UInt32}
-            ORDER BY timestamp
-            """
-            result = clickhouse.execute_query(query, parameters={"series_id": parent_id})
-            if hasattr(result, "result_rows") and result.result_rows:
-                df = pd.DataFrame(result.result_rows, columns=["timestamp", "value"])
+            df = load_series_data_from_clickhouse(clickhouse, parent_id)
+            if df is not None:
                 parent_data[parent_id] = {"data": df, "weight": weight}
 
         if not parent_data:
-            raise ValueError("No parent data found")
+            raise CalculationError("No parent data found")
 
         # Merge all series on timestamp
         all_timestamps = set()
         for data in parent_data.values():
             all_timestamps.update(data["data"]["timestamp"].tolist())
 
-        all_timestamps = sorted(list(all_timestamps))
+        all_timestamps = sorted(all_timestamps)
         result_df = pd.DataFrame({"timestamp": all_timestamps})
 
         # Calculate weighted sum
@@ -226,12 +239,7 @@ def calculate_weighted_composite(
         )
 
         # Update calculation log
-        calc_manager.update_calculation_log(
-            calculation_id=calc_id,
-            status=CalculationStatus.COMPLETED,
-            execution_end=datetime.now(),
-            rows_processed=len(output_df),
-        )
+        update_calculation_log_on_success(calc_manager, calc_id, len(output_df))
 
         context.add_output_metadata(
             {
@@ -244,11 +252,6 @@ def calculate_weighted_composite(
         return output_df
 
     except Exception as e:
-        calc_manager.update_calculation_log(
-            calculation_id=calc_id,
-            status=CalculationStatus.FAILED,
-            execution_end=datetime.now(),
-            error_message=str(e),
-        )
-        raise
+        update_calculation_log_on_error(calc_manager, calc_id, str(e))
+        raise CalculationError(f"Calculation failed: {e}") from e
 

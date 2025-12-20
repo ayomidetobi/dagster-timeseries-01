@@ -16,7 +16,7 @@ class HNStoriesConfig(Config):
     hn_top_stories_path: str = "hackernews_top_stories.csv"
 
 
-@asset
+@asset(kinds=["hackernewsapi"])
 def hackernews_top_story_ids(config: HNStoriesConfig):
     """Get top stories from the HackerNews top stories endpoint."""
     top_story_ids = requests.get("https://hacker-news.firebaseio.com/v0/topstories.json").json()
@@ -25,7 +25,7 @@ def hackernews_top_story_ids(config: HNStoriesConfig):
         json.dump(top_story_ids[: config.top_stories_limit], f)
 
 
-@asset(deps=[hackernews_top_story_ids])
+@asset(deps=[hackernews_top_story_ids], kinds=["hackernewsapi"])
 def hackernews_top_stories(config: HNStoriesConfig) -> MaterializeResult:
     """Get items based on story ids from the HackerNews items endpoint."""
     with open(config.hn_top_story_ids_path, "r") as f:

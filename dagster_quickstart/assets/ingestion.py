@@ -1,62 +1,71 @@
 """Data ingestion assets for multiple data sources."""
 
-import pandas as pd
+import polars as pl
 from dagster import (
-    asset,
     AssetExecutionContext,
     Config,
     MetadataValue,
+    asset,
+    AssetKey,
 )
 from dagster_clickhouse.resources import ClickHouseResource
 from database.meta_series import MetaSeriesManager
+
+from dagster_quickstart.utils.helpers import (
+    generate_date_range,
+    get_or_validate_meta_series,
+)
+from dagster_quickstart.utils.exceptions import MetaSeriesNotFoundError
 
 
 class IngestionConfig(Config):
     """Configuration for data ingestion."""
 
-    source: str
-    ticker: str
-    series_code: str
-    start_date: str
-    end_date: str
+    source: str = "BLOOMBERG"
+    ticker: str = "AAPL US Equity"
+    series_code: str = "AAPL_PX_LAST"
+    start_date: str = "2024-01-01"
+    end_date: str = "2024-12-31"
 
 
 @asset(
     group_name="ingestion",
     description="Ingest raw time-series data from Bloomberg",
+    deps=[AssetKey("load_meta_series_from_csv")],
+    kinds=["csv","clickhouse"],
 )
 def ingest_bloomberg_data(
     context: AssetExecutionContext,
     config: IngestionConfig,
     clickhouse: ClickHouseResource,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """Ingest data from Bloomberg source."""
     context.log.info(f"Ingesting Bloomberg data for ticker: {config.ticker}")
 
     # In a real implementation, this would connect to Bloomberg API
     # For now, we'll simulate with sample data
-    dates = pd.date_range(config.start_date, config.end_date, freq="D")
-    sample_data = pd.DataFrame(
+    dates = generate_date_range(config.start_date, config.end_date)
+    
+    sample_data = pl.DataFrame(
         {
             "timestamp": dates,
             "value": [100.0 + i * 0.1 for i in range(len(dates))],
         }
     )
 
-    # Get or create meta series
+    # Get or validate meta series
     meta_manager = MetaSeriesManager(clickhouse)
-    meta_series = meta_manager.get_meta_series_by_code(config.series_code)
-
-    if not meta_series:
-        context.log.warning(f"Meta series {config.series_code} not found. Creating...")
-        # In real implementation, would create meta series first
-        # For now, assume it exists
-        raise ValueError(f"Meta series {config.series_code} must exist before ingestion")
+    meta_series = get_or_validate_meta_series(
+        meta_manager, config.series_code, context, raise_if_not_found=True
+    )
+    
+    if meta_series is None:
+        raise MetaSeriesNotFoundError(f"Meta series {config.series_code} not found")
 
     series_id = meta_series["series_id"]
 
     # Add series_id to dataframe
-    sample_data["series_id"] = series_id
+    sample_data = sample_data.with_columns(pl.lit(series_id).alias("series_id"))
 
     context.add_output_metadata(
         {
@@ -66,24 +75,27 @@ def ingest_bloomberg_data(
         }
     )
 
-    return sample_data[["series_id", "timestamp", "value"]]
+    return sample_data.select(["series_id", "timestamp", "value"])
 
 
 @asset(
     group_name="ingestion",
     description="Ingest raw time-series data from LSEG",
+    deps=[AssetKey("load_meta_series_from_csv")],  # Meta series must exist before ingestion
+    kinds=["csv","clickhouse"],
 )
 def ingest_lseg_data(
     context: AssetExecutionContext,
     config: IngestionConfig,
     clickhouse: ClickHouseResource,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """Ingest data from LSEG source."""
     context.log.info(f"Ingesting LSEG data for ticker: {config.ticker}")
 
     # In a real implementation, this would connect to LSEG API
-    dates = pd.date_range(config.start_date, config.end_date, freq="D")
-    sample_data = pd.DataFrame(
+    dates = generate_date_range(config.start_date, config.end_date)
+    
+    sample_data = pl.DataFrame(
         {
             "timestamp": dates,
             "value": [200.0 + i * 0.15 for i in range(len(dates))],
@@ -91,13 +103,12 @@ def ingest_lseg_data(
     )
 
     meta_manager = MetaSeriesManager(clickhouse)
-    meta_series = meta_manager.get_meta_series_by_code(config.series_code)
-
-    if not meta_series:
-        raise ValueError(f"Meta series {config.series_code} must exist before ingestion")
+    meta_series = get_or_validate_meta_series(
+        meta_manager, config.series_code, context, raise_if_not_found=True
+    )
 
     series_id = meta_series["series_id"]
-    sample_data["series_id"] = series_id
+    sample_data = sample_data.with_columns(pl.lit(series_id).alias("series_id"))
 
     context.add_output_metadata(
         {
@@ -107,23 +118,26 @@ def ingest_lseg_data(
         }
     )
 
-    return sample_data[["series_id", "timestamp", "value"]]
+    return sample_data.select(["series_id", "timestamp", "value"])
 
 
 @asset(
     group_name="ingestion",
     description="Ingest raw time-series data from Hawkeye",
+    deps=[AssetKey("load_meta_series_from_csv")],  # Meta series must exist before ingestion
+    kinds=["csv","clickhouse"],
 )
 def ingest_hawkeye_data(
     context: AssetExecutionContext,
     config: IngestionConfig,
     clickhouse: ClickHouseResource,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """Ingest data from Hawkeye source."""
     context.log.info(f"Ingesting Hawkeye data for ticker: {config.ticker}")
 
-    dates = pd.date_range(config.start_date, config.end_date, freq="D")
-    sample_data = pd.DataFrame(
+    dates = generate_date_range(config.start_date, config.end_date)
+    
+    sample_data = pl.DataFrame(
         {
             "timestamp": dates,
             "value": [150.0 + i * 0.12 for i in range(len(dates))],
@@ -131,13 +145,12 @@ def ingest_hawkeye_data(
     )
 
     meta_manager = MetaSeriesManager(clickhouse)
-    meta_series = meta_manager.get_meta_series_by_code(config.series_code)
-
-    if not meta_series:
-        raise ValueError(f"Meta series {config.series_code} must exist before ingestion")
+    meta_series = get_or_validate_meta_series(
+        meta_manager, config.series_code, context, raise_if_not_found=True
+    )
 
     series_id = meta_series["series_id"]
-    sample_data["series_id"] = series_id
+    sample_data = sample_data.with_columns(pl.lit(series_id).alias("series_id"))
 
     context.add_output_metadata(
         {
@@ -147,23 +160,26 @@ def ingest_hawkeye_data(
         }
     )
 
-    return sample_data[["series_id", "timestamp", "value"]]
+    return sample_data.select(["series_id", "timestamp", "value"])
 
 
 @asset(
     group_name="ingestion",
     description="Ingest raw time-series data from Ramp",
+    deps=[AssetKey("load_meta_series_from_csv")],  # Meta series must exist before ingestion
+    kinds=["csv","clickhouse"],
 )
 def ingest_ramp_data(
     context: AssetExecutionContext,
     config: IngestionConfig,
     clickhouse: ClickHouseResource,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """Ingest data from Ramp source."""
     context.log.info(f"Ingesting Ramp data for ticker: {config.ticker}")
 
-    dates = pd.date_range(config.start_date, config.end_date, freq="D")
-    sample_data = pd.DataFrame(
+    dates = generate_date_range(config.start_date, config.end_date)
+    
+    sample_data = pl.DataFrame(
         {
             "timestamp": dates,
             "value": [175.0 + i * 0.13 for i in range(len(dates))],
@@ -171,13 +187,12 @@ def ingest_ramp_data(
     )
 
     meta_manager = MetaSeriesManager(clickhouse)
-    meta_series = meta_manager.get_meta_series_by_code(config.series_code)
-
-    if not meta_series:
-        raise ValueError(f"Meta series {config.series_code} must exist before ingestion")
+    meta_series = get_or_validate_meta_series(
+        meta_manager, config.series_code, context, raise_if_not_found=True
+    )
 
     series_id = meta_series["series_id"]
-    sample_data["series_id"] = series_id
+    sample_data = sample_data.with_columns(pl.lit(series_id).alias("series_id"))
 
     context.add_output_metadata(
         {
@@ -187,23 +202,26 @@ def ingest_ramp_data(
         }
     )
 
-    return sample_data[["series_id", "timestamp", "value"]]
+    return sample_data.select(["series_id", "timestamp", "value"])
 
 
 @asset(
     group_name="ingestion",
     description="Ingest raw time-series data from OneTick",
+    deps=[AssetKey("load_meta_series_from_csv")],  # Meta series must exist before ingestion
+    kinds=["csv","clickhouse"],
 )
 def ingest_onetick_data(
     context: AssetExecutionContext,
     config: IngestionConfig,
     clickhouse: ClickHouseResource,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """Ingest data from OneTick source."""
     context.log.info(f"Ingesting OneTick data for ticker: {config.ticker}")
 
-    dates = pd.date_range(config.start_date, config.end_date, freq="D")
-    sample_data = pd.DataFrame(
+    dates = generate_date_range(config.start_date, config.end_date)
+    
+    sample_data = pl.DataFrame(
         {
             "timestamp": dates,
             "value": [125.0 + i * 0.11 for i in range(len(dates))],
@@ -211,13 +229,12 @@ def ingest_onetick_data(
     )
 
     meta_manager = MetaSeriesManager(clickhouse)
-    meta_series = meta_manager.get_meta_series_by_code(config.series_code)
-
-    if not meta_series:
-        raise ValueError(f"Meta series {config.series_code} must exist before ingestion")
+    meta_series = get_or_validate_meta_series(
+        meta_manager, config.series_code, context, raise_if_not_found=True
+    )
 
     series_id = meta_series["series_id"]
-    sample_data["series_id"] = series_id
+    sample_data = sample_data.with_columns(pl.lit(series_id).alias("series_id"))
 
     context.add_output_metadata(
         {
@@ -227,5 +244,5 @@ def ingest_onetick_data(
         }
     )
 
-    return sample_data[["series_id", "timestamp", "value"]]
+    return sample_data.select(["series_id", "timestamp", "value"])
 

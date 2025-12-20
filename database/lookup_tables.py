@@ -1,6 +1,6 @@
 """Lookup table management for the financial platform."""
 
-from typing import Optional, List, Dict, Any
+from typing import Optional, Dict, Any
 from datetime import datetime
 from dagster_clickhouse.resources import ClickHouseResource
 from database.models import (
@@ -13,6 +13,14 @@ from database.models import (
     FieldTypeLookup,
     TickerSourceLookup,
 )
+from database.utils import (
+    get_next_id,
+    get_by_name,
+    execute_update_query,
+    execute_insert_query,
+)
+from dagster_quickstart.utils.constants import DB_TABLES, DB_COLUMNS
+from dagster_quickstart.utils.exceptions import DatabaseError
 
 
 class LookupTableManager:
@@ -22,335 +30,198 @@ class LookupTableManager:
         """Initialize with ClickHouse resource."""
         self.clickhouse = clickhouse
 
+    def _insert_or_update_lookup(
+        self,
+        lookup_type: str,
+        record_id: Optional[int],
+        name: str,
+        description: Optional[str],
+        extra_fields: Optional[Dict[str, Any]] = None,
+    ) -> int:
+        """Generic method to insert or update a lookup record.
+        
+        Args:
+            lookup_type: Type of lookup (e.g., "asset_class")
+            record_id: Optional existing ID for update
+            name: Name of the lookup
+            description: Optional description
+            extra_fields: Optional extra fields (e.g., {"is_derived": 0, "field_type_code": "PX_LAST"})
+        
+        Returns:
+            The ID of the record (existing or newly created)
+        """
+        table_name = DB_TABLES[lookup_type]
+        id_column, name_column = DB_COLUMNS[lookup_type]
+        now = datetime.now()
+        
+        if record_id:
+            # Update existing record
+            update_fields = {name_column: name}
+            if description is not None:
+                update_fields["description"] = description
+            if extra_fields:
+                update_fields.update(extra_fields)
+            
+            try:
+                execute_update_query(
+                    self.clickhouse,
+                    table_name,
+                    id_column,
+                    record_id,
+                    update_fields,
+                    now,
+                )
+                return record_id
+            except Exception as e:
+                raise DatabaseError(f"Failed to update {lookup_type}: {e}") from e
+        else:
+            # Insert new record
+            next_id = get_next_id(self.clickhouse, table_name, id_column)
+            insert_fields = {name_column: name}
+            if description is not None:
+                insert_fields["description"] = description
+            if extra_fields:
+                insert_fields.update(extra_fields)
+            
+            try:
+                execute_insert_query(
+                    self.clickhouse,
+                    table_name,
+                    id_column,
+                    next_id,
+                    insert_fields,
+                    now,
+                )
+                return next_id
+            except Exception as e:
+                raise DatabaseError(f"Failed to insert {lookup_type}: {e}") from e
+
+    def _get_lookup_by_name(self, lookup_type: str, name: str) -> Optional[Dict[str, Any]]:
+        """Generic method to get a lookup record by name.
+        
+        Args:
+            lookup_type: Type of lookup (e.g., "asset_class")
+            name: Name to search for
+        
+        Returns:
+            Dictionary with record data or None if not found
+        """
+        table_name = DB_TABLES[lookup_type]
+        _, name_column = DB_COLUMNS[lookup_type]
+        return get_by_name(self.clickhouse, table_name, name_column, name)
+
+    # Asset Class methods
     def insert_asset_class(self, asset_class: AssetClassLookup) -> int:
         """Insert or update an asset class."""
-        now = datetime.now()
-        if asset_class.asset_class_id:
-            # Update
-            query = """
-            ALTER TABLE assetClassLookup
-            UPDATE asset_class_name = {name:String},
-                   description = {desc:String},
-                   updated_at = {now:DateTime64(3)}
-            WHERE asset_class_id = {id:UInt32}
-            """
-            self.clickhouse.execute_command(
-                query,
-                parameters={
-                    "id": asset_class.asset_class_id,
-                    "name": asset_class.name,
-                    "desc": asset_class.description,
-                    "now": now,
-                },
-            )
-            return asset_class.asset_class_id
-        else:
-            # Insert
-            query = """
-            INSERT INTO assetClassLookup (asset_class_name, description, created_at, updated_at)
-            VALUES ({name:String}, {desc:String}, {now:DateTime64(3)}, {now:DateTime64(3)})
-            """
-            self.clickhouse.execute_command(
-                query,
-                parameters={"name": asset_class.name, "desc": asset_class.description, "now": now},
-            )
-            # Get the inserted ID
-            result = self.clickhouse.execute_query(
-                "SELECT max(asset_class_id) FROM assetClassLookup"
-            )
-            if hasattr(result, "result_rows") and result.result_rows and result.result_rows[0][0]:
-                return result.result_rows[0][0]
-            return 1
+        return self._insert_or_update_lookup(
+            "asset_class",
+            asset_class.asset_class_id,
+            asset_class.name,
+            asset_class.description,
+        )
 
     def get_asset_class_by_name(self, name: str) -> Optional[Dict[str, Any]]:
         """Get asset class by name."""
-        query = "SELECT * FROM assetClassLookup WHERE asset_class_name = {name:String} LIMIT 1"
-        result = self.clickhouse.execute_query(query, parameters={"name": name})
-        if hasattr(result, "result_rows") and result.result_rows:
-            columns = result.column_names
-            return dict(zip(columns, result.result_rows[0]))
-        return None
+        return self._get_lookup_by_name("asset_class", name)
 
+    # Product Type methods
     def insert_product_type(self, product_type: ProductTypeLookup) -> int:
         """Insert or update a product type."""
-        now = datetime.now()
-        if product_type.product_type_id:
-            query = """
-            ALTER TABLE productTypeLookup
-            UPDATE product_type_name = {name:String},
-                   is_derived = {derived:UInt8},
-                   description = {desc:String},
-                   updated_at = {now:DateTime64(3)}
-            WHERE product_type_id = {id:UInt32}
-            """
-            self.clickhouse.execute_command(
-                query,
-                parameters={
-                    "id": product_type.product_type_id,
-                    "name": product_type.name,
-                    "derived": 1 if product_type.is_derived else 0,
-                    "desc": product_type.description,
-                    "now": now,
-                },
-            )
-            return product_type.product_type_id
-        else:
-            query = """
-            INSERT INTO productTypeLookup (product_type_name, is_derived, description, created_at, updated_at)
-            VALUES ({name:String}, {derived:UInt8}, {desc:String}, {now:DateTime64(3)}, {now:DateTime64(3)})
-            """
-            self.clickhouse.execute_command(
-                query,
-                parameters={
-                    "name": product_type.name,
-                    "derived": 1 if product_type.is_derived else 0,
-                    "desc": product_type.description,
-                    "now": now,
-                },
-            )
-            result = self.clickhouse.execute_query(
-                "SELECT max(product_type_id) FROM productTypeLookup"
-            )
-            if hasattr(result, "result_rows") and result.result_rows and result.result_rows[0][0]:
-                return result.result_rows[0][0]
-            return 1
+        return self._insert_or_update_lookup(
+            "product_type",
+            product_type.product_type_id,
+            product_type.name,
+            product_type.description,
+            extra_fields={"is_derived": 1 if product_type.is_derived else 0},
+        )
 
+    def get_product_type_by_name(self, name: str) -> Optional[Dict[str, Any]]:
+        """Get product type by name."""
+        return self._get_lookup_by_name("product_type", name)
+
+    # Sub Asset Class methods
     def insert_sub_asset_class(self, sub_asset_class: SubAssetClassLookup) -> int:
         """Insert or update a sub-asset class."""
-        now = datetime.now()
-        if sub_asset_class.sub_asset_class_id:
-            query = """
-            ALTER TABLE subAssetClassLookup
-            UPDATE sub_asset_class_name = {name:String},
-                   asset_class_id = {asset_id:UInt32},
-                   description = {desc:String},
-                   updated_at = {now:DateTime64(3)}
-            WHERE sub_asset_class_id = {id:UInt32}
-            """
-            self.clickhouse.execute_command(
-                query,
-                parameters={
-                    "id": sub_asset_class.sub_asset_class_id,
-                    "name": sub_asset_class.name,
-                    "asset_id": sub_asset_class.asset_class_id,
-                    "desc": sub_asset_class.description,
-                    "now": now,
-                },
-            )
-            return sub_asset_class.sub_asset_class_id
-        else:
-            query = """
-            INSERT INTO subAssetClassLookup (sub_asset_class_name, asset_class_id, description, created_at, updated_at)
-            VALUES ({name:String}, {asset_id:UInt32}, {desc:String}, {now:DateTime64(3)}, {now:DateTime64(3)})
-            """
-            self.clickhouse.execute_command(
-                query,
-                parameters={
-                    "name": sub_asset_class.name,
-                    "asset_id": sub_asset_class.asset_class_id,
-                    "desc": sub_asset_class.description,
-                    "now": now,
-                },
-            )
-            result = self.clickhouse.execute_query(
-                "SELECT max(sub_asset_class_id) FROM subAssetClassLookup"
-            )
-            if hasattr(result, "result_rows") and result.result_rows and result.result_rows[0][0]:
-                return result.result_rows[0][0]
-            return 1
+        return self._insert_or_update_lookup(
+            "sub_asset_class",
+            sub_asset_class.sub_asset_class_id,
+            sub_asset_class.name,
+            sub_asset_class.description,
+            extra_fields={"asset_class_id": sub_asset_class.asset_class_id},
+        )
 
+    def get_sub_asset_class_by_name(self, name: str) -> Optional[Dict[str, Any]]:
+        """Get sub-asset class by name."""
+        return self._get_lookup_by_name("sub_asset_class", name)
+
+    # Data Type methods
     def insert_data_type(self, data_type: DataTypeLookup) -> int:
         """Insert or update a data type."""
-        now = datetime.now()
-        if data_type.data_type_id:
-            query = """
-            ALTER TABLE dataTypeLookup
-            UPDATE data_type_name = {name:String},
-                   description = {desc:String},
-                   updated_at = {now:DateTime64(3)}
-            WHERE data_type_id = {id:UInt32}
-            """
-            self.clickhouse.execute_command(
-                query,
-                parameters={
-                    "id": data_type.data_type_id,
-                    "name": data_type.name,
-                    "desc": data_type.description,
-                    "now": now,
-                },
-            )
-            return data_type.data_type_id
-        else:
-            query = """
-            INSERT INTO dataTypeLookup (data_type_name, description, created_at, updated_at)
-            VALUES ({name:String}, {desc:String}, {now:DateTime64(3)}, {now:DateTime64(3)})
-            """
-            self.clickhouse.execute_command(
-                query,
-                parameters={"name": data_type.name, "desc": data_type.description, "now": now},
-            )
-            result = self.clickhouse.execute_query("SELECT max(data_type_id) FROM dataTypeLookup")
-            if hasattr(result, "result_rows") and result.result_rows and result.result_rows[0][0]:
-                return result.result_rows[0][0]
-            return 1
+        return self._insert_or_update_lookup(
+            "data_type",
+            data_type.data_type_id,
+            data_type.name,
+            data_type.description,
+        )
 
+    def get_data_type_by_name(self, name: str) -> Optional[Dict[str, Any]]:
+        """Get data type by name."""
+        return self._get_lookup_by_name("data_type", name)
+
+    # Structure Type methods
     def insert_structure_type(self, structure_type: StructureTypeLookup) -> int:
         """Insert or update a structure type."""
-        now = datetime.now()
-        if structure_type.structure_type_id:
-            query = """
-            ALTER TABLE structureTypeLookup
-            UPDATE structure_type_name = {name:String},
-                   description = {desc:String},
-                   updated_at = {now:DateTime64(3)}
-            WHERE structure_type_id = {id:UInt32}
-            """
-            self.clickhouse.execute_command(
-                query,
-                parameters={
-                    "id": structure_type.structure_type_id,
-                    "name": structure_type.name,
-                    "desc": structure_type.description,
-                    "now": now,
-                },
-            )
-            return structure_type.structure_type_id
-        else:
-            query = """
-            INSERT INTO structureTypeLookup (structure_type_name, description, created_at, updated_at)
-            VALUES ({name:String}, {desc:String}, {now:DateTime64(3)}, {now:DateTime64(3)})
-            """
-            self.clickhouse.execute_command(
-                query,
-                parameters={"name": structure_type.name, "desc": structure_type.description, "now": now},
-            )
-            result = self.clickhouse.execute_query(
-                "SELECT max(structure_type_id) FROM structureTypeLookup"
-            )
-            if hasattr(result, "result_rows") and result.result_rows and result.result_rows[0][0]:
-                return result.result_rows[0][0]
-            return 1
+        return self._insert_or_update_lookup(
+            "structure_type",
+            structure_type.structure_type_id,
+            structure_type.name,
+            structure_type.description,
+        )
 
+    def get_structure_type_by_name(self, name: str) -> Optional[Dict[str, Any]]:
+        """Get structure type by name."""
+        return self._get_lookup_by_name("structure_type", name)
+
+    # Market Segment methods
     def insert_market_segment(self, market_segment: MarketSegmentLookup) -> int:
         """Insert or update a market segment."""
-        now = datetime.now()
-        if market_segment.market_segment_id:
-            query = """
-            ALTER TABLE marketSegmentLookup
-            UPDATE market_segment_name = {name:String},
-                   description = {desc:String},
-                   updated_at = {now:DateTime64(3)}
-            WHERE market_segment_id = {id:UInt32}
-            """
-            self.clickhouse.execute_command(
-                query,
-                parameters={
-                    "id": market_segment.market_segment_id,
-                    "name": market_segment.name,
-                    "desc": market_segment.description,
-                    "now": now,
-                },
-            )
-            return market_segment.market_segment_id
-        else:
-            query = """
-            INSERT INTO marketSegmentLookup (market_segment_name, description, created_at, updated_at)
-            VALUES ({name:String}, {desc:String}, {now:DateTime64(3)}, {now:DateTime64(3)})
-            """
-            self.clickhouse.execute_command(
-                query,
-                parameters={"name": market_segment.name, "desc": market_segment.description, "now": now},
-            )
-            result = self.clickhouse.execute_query(
-                "SELECT max(market_segment_id) FROM marketSegmentLookup"
-            )
-            if hasattr(result, "result_rows") and result.result_rows and result.result_rows[0][0]:
-                return result.result_rows[0][0]
-            return 1
+        return self._insert_or_update_lookup(
+            "market_segment",
+            market_segment.market_segment_id,
+            market_segment.name,
+            market_segment.description,
+        )
 
+    def get_market_segment_by_name(self, name: str) -> Optional[Dict[str, Any]]:
+        """Get market segment by name."""
+        return self._get_lookup_by_name("market_segment", name)
+
+    # Field Type methods
     def insert_field_type(self, field_type: FieldTypeLookup) -> int:
         """Insert or update a field type."""
-        now = datetime.now()
-        if field_type.field_type_id:
-            query = """
-            ALTER TABLE fieldTypeLookup
-            UPDATE field_type_name = {name:String},
-                   field_type_code = {code:String},
-                   description = {desc:String},
-                   updated_at = {now:DateTime64(3)}
-            WHERE field_type_id = {id:UInt32}
-            """
-            self.clickhouse.execute_command(
-                query,
-                parameters={
-                    "id": field_type.field_type_id,
-                    "name": field_type.name,
-                    "code": field_type.field_type_code,
-                    "desc": field_type.description,
-                    "now": now,
-                },
-            )
-            return field_type.field_type_id
-        else:
-            query = """
-            INSERT INTO fieldTypeLookup (field_type_name, field_type_code, description, created_at, updated_at)
-            VALUES ({name:String}, {code:String}, {desc:String}, {now:DateTime64(3)}, {now:DateTime64(3)})
-            """
-            self.clickhouse.execute_command(
-                query,
-                parameters={
-                    "name": field_type.name,
-                    "code": field_type.field_type_code,
-                    "desc": field_type.description,
-                    "now": now,
-                },
-            )
-            result = self.clickhouse.execute_query("SELECT max(field_type_id) FROM fieldTypeLookup")
-            if hasattr(result, "result_rows") and result.result_rows and result.result_rows[0][0]:
-                return result.result_rows[0][0]
-            return 1
+        return self._insert_or_update_lookup(
+            "field_type",
+            field_type.field_type_id,
+            field_type.name,
+            field_type.description,
+            extra_fields={"field_type_code": field_type.field_type_code},
+        )
 
+    def get_field_type_by_name(self, name: str) -> Optional[Dict[str, Any]]:
+        """Get field type by name."""
+        return self._get_lookup_by_name("field_type", name)
+
+    # Ticker Source methods
     def insert_ticker_source(self, ticker_source: TickerSourceLookup) -> int:
         """Insert or update a ticker source."""
-        now = datetime.now()
-        if ticker_source.ticker_source_id:
-            query = """
-            ALTER TABLE tickerSourceLookup
-            UPDATE ticker_source_name = {name:String},
-                   ticker_source_code = {code:String},
-                   description = {desc:String},
-                   updated_at = {now:DateTime64(3)}
-            WHERE ticker_source_id = {id:UInt32}
-            """
-            self.clickhouse.execute_command(
-                query,
-                parameters={
-                    "id": ticker_source.ticker_source_id,
-                    "name": ticker_source.name,
-                    "code": ticker_source.ticker_source_code,
-                    "desc": ticker_source.description,
-                    "now": now,
-                },
-            )
-            return ticker_source.ticker_source_id
-        else:
-            query = """
-            INSERT INTO tickerSourceLookup (ticker_source_name, ticker_source_code, description, created_at, updated_at)
-            VALUES ({name:String}, {code:String}, {desc:String}, {now:DateTime64(3)}, {now:DateTime64(3)})
-            """
-            self.clickhouse.execute_command(
-                query,
-                parameters={
-                    "name": ticker_source.name,
-                    "code": ticker_source.ticker_source_code,
-                    "desc": ticker_source.description,
-                    "now": now,
-                },
-            )
-            result = self.clickhouse.execute_query(
-                "SELECT max(ticker_source_id) FROM tickerSourceLookup"
-            )
-            if hasattr(result, "result_rows") and result.result_rows and result.result_rows[0][0]:
-                return result.result_rows[0][0]
-            return 1
+        return self._insert_or_update_lookup(
+            "ticker_source",
+            ticker_source.ticker_source_id,
+            ticker_source.name,
+            ticker_source.description,
+            extra_fields={"ticker_source_code": ticker_source.ticker_source_code},
+        )
 
+    def get_ticker_source_by_name(self, name: str) -> Optional[Dict[str, Any]]:
+        """Get ticker source by name."""
+        return self._get_lookup_by_name("ticker_source", name)

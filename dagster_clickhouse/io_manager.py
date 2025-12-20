@@ -147,3 +147,24 @@ def clickhouse_io_manager(context) -> ClickHouseIOManager:
         batch_size=10000,
     )
 
+
+class PassthroughIOManager(ConfigurableIOManager):
+    """Simple IO manager that just passes through values without storing them."""
+
+    def handle_output(self, context: OutputContext, obj: Any) -> None:
+        """Handle output - just pass through, don't store."""
+        # For dict outputs, we don't need to store them
+        # They're just metadata/results
+        context.log.debug(f"Passthrough IO manager: received {type(obj)}")
+        return None
+
+    def load_input(self, context: InputContext) -> Any:
+        """Load input - not used for passthrough."""
+        return None
+
+
+@io_manager
+def passthrough_io_manager(context) -> PassthroughIOManager:
+    """Factory function for Passthrough IO Manager."""
+    return PassthroughIOManager()
+

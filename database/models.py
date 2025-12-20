@@ -11,6 +11,7 @@ class DataSource(str, Enum):
 
     RAW = "RAW"
     DERIVED = "DERIVED"
+    NONE = "NONE"
 
 
 class FieldType(str, Enum):
@@ -111,28 +112,17 @@ class MetaSeriesBase(BaseModel):
     series_name: str = Field(..., min_length=1, max_length=255)
     series_code: str = Field(..., min_length=1, max_length=100)
     data_source: DataSource
-    field_type_id: int
-    asset_class_id: int
+    field_type_id: Optional[int] = None
+    asset_class_id: Optional[int] = None
     sub_asset_class_id: Optional[int] = None
-    product_type_id: int
-    data_type_id: int
+    product_type_id: Optional[int] = None
+    data_type_id: Optional[int] = None
     structure_type_id: Optional[int] = None
     market_segment_id: Optional[int] = None
-    ticker_source_id: int
+    ticker_source_id: Optional[int] = None
     ticker: str = Field(..., min_length=1, max_length=100)
-    valid_from: datetime
-    valid_to: Optional[datetime] = None
     calculation_formula: Optional[str] = None
     description: Optional[str] = None
-
-    @field_validator("valid_to")
-    @classmethod
-    def validate_valid_to(cls, v: Optional[datetime], info) -> Optional[datetime]:
-        """Ensure valid_to is after valid_from."""
-        if v is not None and "valid_from" in info.data:
-            if v <= info.data["valid_from"]:
-                raise ValueError("valid_to must be after valid_from")
-        return v
 
 
 class MetaSeriesCreate(MetaSeriesBase):
