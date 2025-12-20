@@ -3,19 +3,19 @@
 import polars as pl
 from dagster import (
     AssetExecutionContext,
+    AssetKey,
     Config,
     MetadataValue,
     asset,
-    AssetKey,
 )
-from dagster_clickhouse.resources import ClickHouseResource
-from database.meta_series import MetaSeriesManager
 
+from dagster_clickhouse.resources import ClickHouseResource
+from dagster_quickstart.utils.exceptions import MetaSeriesNotFoundError
 from dagster_quickstart.utils.helpers import (
     generate_date_range,
     get_or_validate_meta_series,
 )
-from dagster_quickstart.utils.exceptions import MetaSeriesNotFoundError
+from database.meta_series import MetaSeriesManager
 
 
 class IngestionConfig(Config):
@@ -32,7 +32,7 @@ class IngestionConfig(Config):
     group_name="ingestion",
     description="Ingest raw time-series data from Bloomberg",
     deps=[AssetKey("load_meta_series_from_csv")],
-    kinds=["csv","clickhouse"],
+    kinds=["csv", "clickhouse"],
 )
 def ingest_bloomberg_data(
     context: AssetExecutionContext,
@@ -45,7 +45,7 @@ def ingest_bloomberg_data(
     # In a real implementation, this would connect to Bloomberg API
     # For now, we'll simulate with sample data
     dates = generate_date_range(config.start_date, config.end_date)
-    
+
     sample_data = pl.DataFrame(
         {
             "timestamp": dates,
@@ -58,7 +58,7 @@ def ingest_bloomberg_data(
     meta_series = get_or_validate_meta_series(
         meta_manager, config.series_code, context, raise_if_not_found=True
     )
-    
+
     if meta_series is None:
         raise MetaSeriesNotFoundError(f"Meta series {config.series_code} not found")
 
@@ -82,7 +82,7 @@ def ingest_bloomberg_data(
     group_name="ingestion",
     description="Ingest raw time-series data from LSEG",
     deps=[AssetKey("load_meta_series_from_csv")],  # Meta series must exist before ingestion
-    kinds=["csv","clickhouse"],
+    kinds=["csv", "clickhouse"],
 )
 def ingest_lseg_data(
     context: AssetExecutionContext,
@@ -94,7 +94,7 @@ def ingest_lseg_data(
 
     # In a real implementation, this would connect to LSEG API
     dates = generate_date_range(config.start_date, config.end_date)
-    
+
     sample_data = pl.DataFrame(
         {
             "timestamp": dates,
@@ -125,7 +125,7 @@ def ingest_lseg_data(
     group_name="ingestion",
     description="Ingest raw time-series data from Hawkeye",
     deps=[AssetKey("load_meta_series_from_csv")],  # Meta series must exist before ingestion
-    kinds=["csv","clickhouse"],
+    kinds=["csv", "clickhouse"],
 )
 def ingest_hawkeye_data(
     context: AssetExecutionContext,
@@ -136,7 +136,7 @@ def ingest_hawkeye_data(
     context.log.info(f"Ingesting Hawkeye data for ticker: {config.ticker}")
 
     dates = generate_date_range(config.start_date, config.end_date)
-    
+
     sample_data = pl.DataFrame(
         {
             "timestamp": dates,
@@ -167,7 +167,7 @@ def ingest_hawkeye_data(
     group_name="ingestion",
     description="Ingest raw time-series data from Ramp",
     deps=[AssetKey("load_meta_series_from_csv")],  # Meta series must exist before ingestion
-    kinds=["csv","clickhouse"],
+    kinds=["csv", "clickhouse"],
 )
 def ingest_ramp_data(
     context: AssetExecutionContext,
@@ -178,7 +178,7 @@ def ingest_ramp_data(
     context.log.info(f"Ingesting Ramp data for ticker: {config.ticker}")
 
     dates = generate_date_range(config.start_date, config.end_date)
-    
+
     sample_data = pl.DataFrame(
         {
             "timestamp": dates,
@@ -209,7 +209,7 @@ def ingest_ramp_data(
     group_name="ingestion",
     description="Ingest raw time-series data from OneTick",
     deps=[AssetKey("load_meta_series_from_csv")],  # Meta series must exist before ingestion
-    kinds=["csv","clickhouse"],
+    kinds=["csv", "clickhouse"],
 )
 def ingest_onetick_data(
     context: AssetExecutionContext,
@@ -220,7 +220,7 @@ def ingest_onetick_data(
     context.log.info(f"Ingesting OneTick data for ticker: {config.ticker}")
 
     dates = generate_date_range(config.start_date, config.end_date)
-    
+
     sample_data = pl.DataFrame(
         {
             "timestamp": dates,
@@ -245,4 +245,3 @@ def ingest_onetick_data(
     )
 
     return sample_data.select(["series_id", "timestamp", "value"])
-

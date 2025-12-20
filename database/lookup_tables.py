@@ -1,26 +1,27 @@
 """Lookup table management for the financial platform."""
 
-from typing import Optional, Dict, Any
 from datetime import datetime
+from typing import Any, Dict, Optional
+
 from dagster_clickhouse.resources import ClickHouseResource
+from dagster_quickstart.utils.constants import DB_COLUMNS, DB_TABLES
+from dagster_quickstart.utils.exceptions import DatabaseError
 from database.models import (
     AssetClassLookup,
-    ProductTypeLookup,
-    SubAssetClassLookup,
     DataTypeLookup,
-    StructureTypeLookup,
-    MarketSegmentLookup,
     FieldTypeLookup,
+    MarketSegmentLookup,
+    ProductTypeLookup,
+    StructureTypeLookup,
+    SubAssetClassLookup,
     TickerSourceLookup,
 )
 from database.utils import (
-    get_next_id,
-    get_by_name,
-    execute_update_query,
     execute_insert_query,
+    execute_update_query,
+    get_by_name,
+    get_next_id,
 )
-from dagster_quickstart.utils.constants import DB_TABLES, DB_COLUMNS
-from dagster_quickstart.utils.exceptions import DatabaseError
 
 
 class LookupTableManager:
@@ -39,21 +40,21 @@ class LookupTableManager:
         extra_fields: Optional[Dict[str, Any]] = None,
     ) -> int:
         """Generic method to insert or update a lookup record.
-        
+
         Args:
             lookup_type: Type of lookup (e.g., "asset_class")
             record_id: Optional existing ID for update
             name: Name of the lookup
             description: Optional description
             extra_fields: Optional extra fields (e.g., {"is_derived": 0, "field_type_code": "PX_LAST"})
-        
+
         Returns:
             The ID of the record (existing or newly created)
         """
         table_name = DB_TABLES[lookup_type]
         id_column, name_column = DB_COLUMNS[lookup_type]
         now = datetime.now()
-        
+
         if record_id:
             # Update existing record
             update_fields = {name_column: name}
@@ -61,7 +62,7 @@ class LookupTableManager:
                 update_fields["description"] = description
             if extra_fields:
                 update_fields.update(extra_fields)
-            
+
             try:
                 execute_update_query(
                     self.clickhouse,
@@ -82,7 +83,7 @@ class LookupTableManager:
                 insert_fields["description"] = description
             if extra_fields:
                 insert_fields.update(extra_fields)
-            
+
             try:
                 execute_insert_query(
                     self.clickhouse,
@@ -98,11 +99,11 @@ class LookupTableManager:
 
     def _get_lookup_by_name(self, lookup_type: str, name: str) -> Optional[Dict[str, Any]]:
         """Generic method to get a lookup record by name.
-        
+
         Args:
             lookup_type: Type of lookup (e.g., "asset_class")
             name: Name to search for
-        
+
         Returns:
             Dictionary with record data or None if not found
         """

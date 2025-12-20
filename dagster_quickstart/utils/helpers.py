@@ -1,35 +1,34 @@
 """Reusable helper functions for Dagster assets."""
 
-from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional
 
-import polars as pl
 import pandas as pd
+import polars as pl
 from dagster import AssetExecutionContext
+
 from dagster_clickhouse.resources import ClickHouseResource
-
-from database.meta_series import MetaSeriesManager
-from database.dependency import CalculationLogManager
-from database.models import DataSource, CalculationLogBase, CalculationStatus
-
 from dagster_quickstart.utils.exceptions import (
     CSVValidationError,
     DataSourceValidationError,
     MetaSeriesNotFoundError,
 )
+from database.dependency import CalculationLogManager
+from database.meta_series import MetaSeriesManager
+from database.models import CalculationLogBase, CalculationStatus, DataSource
 
 
 def safe_int(value: Any, field_name: str, required: bool = True) -> Optional[int]:
     """Safely convert value to int, handling None and empty strings.
-    
+
     Args:
         value: Value to convert to int
         field_name: Name of the field (for error messages)
         required: Whether the field is required
-    
+
     Returns:
         Integer value or None if not required and value is empty
-    
+
     Raises:
         ValueError: If value is required but missing or invalid
     """
@@ -40,26 +39,24 @@ def safe_int(value: Any, field_name: str, required: bool = True) -> Optional[int
     try:
         return int(value)
     except (ValueError, TypeError) as e:
-        raise ValueError(
-            f"Invalid value for '{field_name}': {value}. Must be an integer."
-        ) from e
+        raise ValueError(f"Invalid value for '{field_name}': {value}. Must be an integer.") from e
 
 
 def parse_data_source(data_source_str: str) -> DataSource:
     """Parse and validate data source string.
-    
+
     Args:
         data_source_str: String representation of data source
-    
+
     Returns:
         DataSource enum value
-    
+
     Raises:
         DataSourceValidationError: If data source is invalid
     """
     if not data_source_str or data_source_str.upper() == "NAN":
         raise DataSourceValidationError("data_source is required and cannot be empty")
-    
+
     try:
         return DataSource[data_source_str.upper()]
     except KeyError:
@@ -69,24 +66,20 @@ def parse_data_source(data_source_str: str) -> DataSource:
         )
 
 
-def validate_csv_columns(
-    df: pl.DataFrame, required_columns: List[str], csv_path: str
-) -> None:
+def validate_csv_columns(df: pl.DataFrame, required_columns: List[str], csv_path: str) -> None:
     """Validate that CSV contains required columns.
-    
+
     Args:
         df: Polars DataFrame
         required_columns: List of required column names
         csv_path: Path to CSV file (for error messages)
-    
+
     Raises:
         CSVValidationError: If required columns are missing
     """
     missing_columns = [col for col in required_columns if col not in df.columns]
     if missing_columns:
-        raise CSVValidationError(
-            f"CSV file {csv_path} missing required columns: {missing_columns}"
-        )
+        raise CSVValidationError(f"CSV file {csv_path} missing required columns: {missing_columns}")
 
 
 def read_csv_safe(
@@ -95,15 +88,15 @@ def read_csv_safe(
     truncate_ragged_lines: bool = True,
 ) -> pl.DataFrame:
     r"""Safely read CSV file with error handling.
-    
+
     Args:
         csv_path: Path to CSV file
         null_values: String representation of NULL values (default: "\\N")
         truncate_ragged_lines: Whether to truncate ragged lines
-    
+
     Returns:
         Polars DataFrame
-    
+
     Raises:
         CSVValidationError: If CSV cannot be read
     """
@@ -118,11 +111,11 @@ def read_csv_safe(
 
 def generate_date_range(start_date: str, end_date: str) -> List[datetime]:
     """Generate list of dates between start and end date (inclusive).
-    
+
     Args:
         start_date: Start date string in ISO format (YYYY-MM-DD)
         end_date: End date string in ISO format (YYYY-MM-DD)
-    
+
     Returns:
         List of datetime objects
     """
@@ -140,11 +133,11 @@ def load_series_data_from_clickhouse(
     clickhouse: ClickHouseResource, series_id: int
 ) -> Optional[pd.DataFrame]:
     """Load time-series data from ClickHouse for a given series_id.
-    
+
     Args:
         clickhouse: ClickHouse resource
         series_id: Series ID to load data for
-    
+
     Returns:
         DataFrame with timestamp and value columns, or None if no data found
     """
@@ -167,30 +160,28 @@ def get_or_validate_meta_series(
     raise_if_not_found: bool = True,
 ) -> Optional[Dict[str, Any]]:
     """Get meta series by code, with optional validation and logging.
-    
+
     Args:
         meta_manager: MetaSeriesManager instance
         series_code: Series code to look up
         context: Optional Dagster context for logging
         raise_if_not_found: Whether to raise exception if not found
-    
+
     Returns:
         Meta series dictionary or None if not found and raise_if_not_found=False
-    
+
     Raises:
         MetaSeriesNotFoundError: If series not found and raise_if_not_found=True
     """
     meta_series = meta_manager.get_meta_series_by_code(series_code)
-    
+
     if not meta_series:
         if raise_if_not_found:
-            raise MetaSeriesNotFoundError(
-                f"Meta series {series_code} must exist before operation"
-            )
+            raise MetaSeriesNotFoundError(f"Meta series {series_code} must exist before operation")
         if context:
             context.log.warning(f"Meta series {series_code} not found")
         return None
-    
+
     return meta_series
 
 
@@ -203,7 +194,7 @@ def create_calculation_log(
     parameters: Optional[str] = None,
 ) -> int:
     """Create a calculation log entry.
-    
+
     Args:
         calc_manager: CalculationLogManager instance
         series_id: Series ID being calculated
@@ -211,7 +202,7 @@ def create_calculation_log(
         formula: Calculation formula
         input_series_ids: List of input series IDs
         parameters: Optional parameters string
-    
+
     Returns:
         Calculation log ID
     """
@@ -222,7 +213,8 @@ def create_calculation_log(
         input_series_ids=input_series_ids,
         parameters=parameters or formula,
         formula=formula,
-        execution_start=datetime.now(),
+        execution_start=datetime.now(),  # Not stored in DB, but required by model
+        execution_end=None,
     )
     return calc_manager.create_calculation_log(calc_log)
 
@@ -233,7 +225,7 @@ def update_calculation_log_on_success(
     rows_processed: int,
 ) -> None:
     """Update calculation log with success status.
-    
+
     Args:
         calc_manager: CalculationLogManager instance
         calculation_id: Calculation log ID
@@ -242,7 +234,6 @@ def update_calculation_log_on_success(
     calc_manager.update_calculation_log(
         calculation_id=calculation_id,
         status=CalculationStatus.COMPLETED,
-        execution_end=datetime.now(),
         rows_processed=rows_processed,
     )
 
@@ -253,7 +244,7 @@ def update_calculation_log_on_error(
     error_message: str,
 ) -> None:
     """Update calculation log with error status.
-    
+
     Args:
         calc_manager: CalculationLogManager instance
         calculation_id: Calculation log ID
@@ -262,18 +253,17 @@ def update_calculation_log_on_error(
     calc_manager.update_calculation_log(
         calculation_id=calculation_id,
         status=CalculationStatus.FAILED,
-        execution_end=datetime.now(),
         error_message=error_message,
     )
 
 
 def is_empty_row(row: Dict[str, Any], required_fields: List[str]) -> bool:
     """Check if a row is empty based on required fields.
-    
+
     Args:
         row: Dictionary representing a row
         required_fields: List of field names that must be non-empty
-    
+
     Returns:
         True if row is empty (any required field is missing or empty)
     """
@@ -282,4 +272,3 @@ def is_empty_row(row: Dict[str, Any], required_fields: List[str]) -> bool:
         if not value or (isinstance(value, str) and not value.strip()):
             return True
     return False
-

@@ -146,13 +146,11 @@ class ClickHouseSchema:
         child_series_id UInt32,
         weight Nullable(Float64) DEFAULT 1.0,
         formula Nullable(String),
-        valid_from DateTime64(6),
-        valid_to Nullable(DateTime64(6)),
         created_at DateTime64(3) DEFAULT now64(3),
         updated_at DateTime64(3) DEFAULT now64(3)
     ) ENGINE = MergeTree
     PRIMARY KEY (dependency_id)
-    ORDER BY (parent_series_id, child_series_id, valid_from)
+    ORDER BY (dependency_id, parent_series_id, child_series_id)
     """
 
     # Calculation Log
@@ -165,15 +163,13 @@ class ClickHouseSchema:
         input_series_ids Array(UInt32),
         parameters String,
         formula String,
-        execution_start DateTime64(6),
-        execution_end Nullable(DateTime64(6)),
         rows_processed Nullable(UInt64),
         error_message Nullable(String),
         created_at DateTime64(3) DEFAULT now64(3)
     ) ENGINE = MergeTree
     PRIMARY KEY (calculation_id)
-    ORDER BY (series_id, execution_start)
-    TTL execution_start + INTERVAL 1 YEAR
+    ORDER BY (calculation_id, series_id, created_at)
+    TTL created_at + INTERVAL 1 YEAR
     """
 
     # Value Data (Time-Series)
@@ -221,7 +217,6 @@ class ClickHouseSchema:
             "CREATE INDEX IF NOT EXISTS idx_dep_parent ON seriesDependencyGraph (parent_series_id)",
             "CREATE INDEX IF NOT EXISTS idx_dep_child ON seriesDependencyGraph (child_series_id)",
             # Indexes for calculation log
-            "CREATE INDEX IF NOT EXISTS idx_calc_series ON calculationLog (series_id, execution_start)",
-            "CREATE INDEX IF NOT EXISTS idx_calc_status ON calculationLog (status, execution_start)",
+            "CREATE INDEX IF NOT EXISTS idx_calc_series ON calculationLog (series_id, created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_calc_status ON calculationLog (status, created_at)",
         ]
-

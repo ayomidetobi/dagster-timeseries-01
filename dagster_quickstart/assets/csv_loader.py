@@ -4,40 +4,41 @@ from typing import Any, Callable, Dict, Optional, Set
 
 import polars as pl
 from dagster import (
-    asset,
     AssetExecutionContext,
+    AssetKey,
     Config,
     MetadataValue,
+    asset,
 )
+
 from dagster_clickhouse.resources import ClickHouseResource
+from dagster_quickstart.utils.constants import (
+    LOOKUP_TABLE_COLUMNS,
+    LOOKUP_TABLE_PROCESSING_ORDER,
+    META_SERIES_REQUIRED_COLUMNS,
+    NULL_VALUE_REPRESENTATION,
+)
+from dagster_quickstart.utils.exceptions import CSVValidationError
+from dagster_quickstart.utils.helpers import (
+    is_empty_row,
+    parse_data_source,
+    read_csv_safe,
+    safe_int,
+    validate_csv_columns,
+)
 from database.lookup_tables import LookupTableManager
 from database.meta_series import MetaSeriesManager
 from database.models import (
     AssetClassLookup,
-    ProductTypeLookup,
-    SubAssetClassLookup,
     DataTypeLookup,
-    StructureTypeLookup,
-    MarketSegmentLookup,
     FieldTypeLookup,
-    TickerSourceLookup,
+    MarketSegmentLookup,
     MetaSeriesCreate,
+    ProductTypeLookup,
+    StructureTypeLookup,
+    SubAssetClassLookup,
+    TickerSourceLookup,
 )
-
-from dagster_quickstart.utils.constants import (
-    LOOKUP_TABLE_COLUMNS,
-    META_SERIES_REQUIRED_COLUMNS,
-    NULL_VALUE_REPRESENTATION,
-    LOOKUP_TABLE_PROCESSING_ORDER,
-)
-from dagster_quickstart.utils.helpers import (
-    safe_int,
-    parse_data_source,
-    validate_csv_columns,
-    read_csv_safe,
-    is_empty_row,
-)
-from dagster_quickstart.utils.exceptions import CSVValidationError
 
 
 class LookupTableCSVConfig(Config):
@@ -56,7 +57,7 @@ class MetaSeriesCSVConfig(Config):
 
 def load_allowed_names(csv_path: str, lookup_table_type: str) -> Set[str]:
     """Load allowed names from CSV file.
-    
+
     Supports two formats:
     1. Wide format: Columns are lookup table types (asset_class, product_type, etc.)
     2. Long format: Has lookup_table_type and name columns
@@ -64,20 +65,20 @@ def load_allowed_names(csv_path: str, lookup_table_type: str) -> Set[str]:
     try:
         # Read CSV with truncate_ragged_lines to handle trailing commas
         df = pl.read_csv(csv_path, truncate_ragged_lines=True)
-        
+
         # Check if this is wide format (columns are lookup table types)
         column_name = lookup_table_type.replace("_", "_")  # Keep as is
         if column_name in df.columns:
             # Wide format: extract unique values from the column
             values = df[column_name].drop_nulls().unique().to_list()
-            return set(str(v).strip() for v in values if v and str(v).strip() != "")
-        
+            return set[str](str(v).strip() for v in values if v and str(v).strip() != "")
+
         # Long format: has lookup_table_type and name columns
         if "name" in df.columns:
             if "lookup_table_type" in df.columns:
                 df = df.filter(pl.col("lookup_table_type") == lookup_table_type)
-            return set(df["name"].unique().to_list())
-        
+            return set[str](df["name"].unique().to_list())
+
         raise ValueError(
             f"CSV file {csv_path} must have either '{column_name}' column "
             f"(wide format) or 'name' column (long format)"
@@ -107,7 +108,7 @@ def process_simple_lookup_type(
     id_field_name: str,
 ) -> Dict[str, int]:
     """Process a simple lookup type (no dependencies, no special code generation).
-    
+
     Args:
         context: Dagster execution context
         lookup_manager: Lookup table manager instance
@@ -118,7 +119,7 @@ def process_simple_lookup_type(
         insert_method: Method to insert lookup (lookup) -> int
         get_by_name_method: Method to get existing lookup by name (name) -> Optional[Dict]
         id_field_name: Name of the ID field in the returned dict (e.g., "data_type_id")
-    
+
     Returns:
         Dictionary mapping name to lookup_id
     """
@@ -128,7 +129,7 @@ def process_simple_lookup_type(
             continue
         name = str(name).strip()
         validate_lookup_name(name, allowed_names, lookup_type)
-        
+
         try:
             existing = get_by_name_method(name)
             if existing:
@@ -151,7 +152,7 @@ def process_asset_class_lookup(
     allowed_names: Set[str],
 ) -> Dict[str, int]:
     """Process asset_class lookup type (returns mapping for sub_asset_class).
-    
+
     Returns:
         Dictionary mapping asset_class name to asset_class_id
     """
@@ -161,7 +162,7 @@ def process_asset_class_lookup(
             continue
         name = str(name).strip()
         validate_lookup_name(name, allowed_names, "asset_class")
-        
+
         try:
             asset_lookup = AssetClassLookup(name=name, description=None)
             existing = lookup_manager.get_asset_class_by_name(name)
@@ -188,7 +189,7 @@ def process_code_based_lookup_type(
     id_field_name: str,
 ) -> Dict[str, int]:
     """Process lookup type that requires code generation (field_type, ticker_source).
-    
+
     Args:
         context: Dagster execution context
         lookup_manager: Lookup table manager instance
@@ -199,7 +200,7 @@ def process_code_based_lookup_type(
         insert_method: Method to insert lookup (lookup) -> int
         get_by_name_method: Method to get existing lookup by name (name) -> Optional[Dict]
         id_field_name: Name of the ID field in the returned dict (e.g., "field_type_id")
-    
+
     Returns:
         Dictionary mapping name to lookup_id
     """
@@ -209,7 +210,7 @@ def process_code_based_lookup_type(
             continue
         name = str(name).strip()
         validate_lookup_name(name, allowed_names, lookup_type)
-        
+
         try:
             existing = get_by_name_method(name)
             if existing:
@@ -239,7 +240,7 @@ def process_product_type_lookup(
             continue
         name = str(name).strip()
         validate_lookup_name(name, allowed_names, "product_type")
-        
+
         try:
             existing = lookup_manager.get_product_type_by_name(name)
             if existing:
@@ -267,18 +268,18 @@ def process_sub_asset_class_lookup(
     for row in df.filter(pl.col("sub_asset_class").is_not_null()).iter_rows(named=True):
         sub_name = str(row["sub_asset_class"]).strip()
         asset_name = str(row.get("asset_class", "")).strip()
-        
+
         if not sub_name or sub_name == "":
             continue
-        
+
         validate_lookup_name(sub_name, allowed_names, "sub_asset_class")
-        
+
         if not asset_name or asset_name not in asset_class_mapping:
             context.log.warning(
                 f"Skipping sub_asset_class '{sub_name}' - asset_class '{asset_name}' not found"
             )
             continue
-        
+
         try:
             existing = lookup_manager.get_sub_asset_class_by_name(sub_name)
             if existing:
@@ -286,9 +287,7 @@ def process_sub_asset_class_lookup(
                 results[sub_name] = existing["sub_asset_class_id"]
             else:
                 sub_asset_lookup = SubAssetClassLookup(
-                    name=sub_name,
-                    description=None,
-                    asset_class_id=asset_class_mapping[asset_name]
+                    name=sub_name, description=None, asset_class_id=asset_class_mapping[asset_name]
                 )
                 lookup_id = lookup_manager.insert_sub_asset_class(sub_asset_lookup)
                 results[sub_name] = lookup_id
@@ -306,13 +305,13 @@ def process_wide_format_lookup(
     available_columns: list,
 ) -> Dict[str, Any]:
     """Process lookup tables from wide format CSV.
-    
+
     Returns:
         Dictionary mapping lookup type to results (name -> id)
     """
     all_results: Dict[str, Any] = {}
     asset_class_mapping: Dict[str, int] = {}
-    
+
     # Define lookup type processors
     lookup_processors = {
         "asset_class": (
@@ -325,7 +324,11 @@ def process_wide_format_lookup(
         ),
         "data_type": (
             lambda v, a: process_simple_lookup_type(
-                context, lookup_manager, "data_type", v, a,
+                context,
+                lookup_manager,
+                "data_type",
+                v,
+                a,
                 lambda n, d: DataTypeLookup(name=n, description=d),
                 lookup_manager.insert_data_type,
                 lookup_manager.get_data_type_by_name,
@@ -335,7 +338,11 @@ def process_wide_format_lookup(
         ),
         "structure_type": (
             lambda v, a: process_simple_lookup_type(
-                context, lookup_manager, "structure_type", v, a,
+                context,
+                lookup_manager,
+                "structure_type",
+                v,
+                a,
                 lambda n, d: StructureTypeLookup(name=n, description=d),
                 lookup_manager.insert_structure_type,
                 lookup_manager.get_structure_type_by_name,
@@ -345,7 +352,11 @@ def process_wide_format_lookup(
         ),
         "market_segment": (
             lambda v, a: process_simple_lookup_type(
-                context, lookup_manager, "market_segment", v, a,
+                context,
+                lookup_manager,
+                "market_segment",
+                v,
+                a,
                 lambda n, d: MarketSegmentLookup(name=n, description=d),
                 lookup_manager.insert_market_segment,
                 lookup_manager.get_market_segment_by_name,
@@ -355,7 +366,11 @@ def process_wide_format_lookup(
         ),
         "field_type": (
             lambda v, a: process_code_based_lookup_type(
-                context, lookup_manager, "field_type", v, a,
+                context,
+                lookup_manager,
+                "field_type",
+                v,
+                a,
                 lambda n, d, c: FieldTypeLookup(name=n, description=d, field_type_code=c),
                 lookup_manager.insert_field_type,
                 lookup_manager.get_field_type_by_name,
@@ -365,7 +380,11 @@ def process_wide_format_lookup(
         ),
         "ticker_source": (
             lambda v, a: process_code_based_lookup_type(
-                context, lookup_manager, "ticker_source", v, a,
+                context,
+                lookup_manager,
+                "ticker_source",
+                v,
+                a,
                 lambda n, d, c: TickerSourceLookup(name=n, description=d, ticker_source_code=c),
                 lookup_manager.insert_ticker_source,
                 lookup_manager.get_ticker_source_by_name,
@@ -374,7 +393,7 @@ def process_wide_format_lookup(
             None,
         ),
     }
-    
+
     # Process independent lookup types first
     for lookup_type in LOOKUP_TABLE_PROCESSING_ORDER:
         if lookup_type in available_columns:
@@ -382,17 +401,17 @@ def process_wide_format_lookup(
                 allowed_names = load_allowed_names(config.allowed_names_csv_path, lookup_type)
                 values = df[lookup_type].drop_nulls().unique().to_list()
                 context.log.info(f"Loading {len(values)} {lookup_type}s")
-                
+
                 processor, result_getter = lookup_processors[lookup_type]
                 results = processor(values, allowed_names)
-                
+
                 if result_getter:
                     # For asset_class, update the mapping
                     asset_class_mapping.update(results)
                     all_results[lookup_type] = asset_class_mapping
                 else:
                     all_results[lookup_type] = results
-    
+
     # Process sub_asset_class last (depends on asset_class)
     if "sub_asset_class" in available_columns and "asset_class" in available_columns:
         if config.lookup_table_type in ("all", "sub_asset_class"):
@@ -403,15 +422,17 @@ def process_wide_format_lookup(
                         existing = lookup_manager.get_asset_class_by_name(str(name).strip())
                         if existing:
                             asset_class_mapping[str(name).strip()] = existing["asset_class_id"]
-            
+
             allowed_names = load_allowed_names(config.allowed_names_csv_path, "sub_asset_class")
-            context.log.info(f"Loading sub_asset_classes with {len(asset_class_mapping)} asset classes available")
-            
+            context.log.info(
+                f"Loading sub_asset_classes with {len(asset_class_mapping)} asset classes available"
+            )
+
             results = process_sub_asset_class_lookup(
                 context, lookup_manager, df, allowed_names, asset_class_mapping
             )
             all_results["sub_asset_class"] = results
-    
+
     return all_results
 
 
@@ -422,19 +443,21 @@ def process_long_format_lookup(
     config: LookupTableCSVConfig,
 ) -> Dict[str, int]:
     """Process lookup tables from long format CSV.
-    
+
     Returns:
         Dictionary mapping name to lookup_id
     """
     allowed_names = load_allowed_names(config.allowed_names_csv_path, config.lookup_table_type)
-    context.log.info(f"Loaded {len(allowed_names)} allowed names from {config.allowed_names_csv_path}")
-    
+    context.log.info(
+        f"Loaded {len(allowed_names)} allowed names from {config.allowed_names_csv_path}"
+    )
+
     if "lookup_table_type" in df.columns:
         df = df.filter(pl.col("lookup_table_type") == config.lookup_table_type)
         context.log.info(f"Filtered to {len(df)} rows for {config.lookup_table_type}")
 
     results: Dict[str, int] = {}
-    
+
     # Define handlers for each lookup type
     handlers = {
         "asset_class": lambda name, desc, row: _handle_asset_class(
@@ -447,16 +470,34 @@ def process_long_format_lookup(
             lookup_manager, name, desc, row, results
         ),
         "data_type": lambda name, desc, row: _handle_simple_lookup(
-            lookup_manager, name, desc, DataTypeLookup, lookup_manager.insert_data_type,
-            lookup_manager.get_data_type_by_name, "data_type_id", results
+            lookup_manager,
+            name,
+            desc,
+            DataTypeLookup,
+            lookup_manager.insert_data_type,
+            lookup_manager.get_data_type_by_name,
+            "data_type_id",
+            results,
         ),
         "structure_type": lambda name, desc, row: _handle_simple_lookup(
-            lookup_manager, name, desc, StructureTypeLookup, lookup_manager.insert_structure_type,
-            lookup_manager.get_structure_type_by_name, "structure_type_id", results
+            lookup_manager,
+            name,
+            desc,
+            StructureTypeLookup,
+            lookup_manager.insert_structure_type,
+            lookup_manager.get_structure_type_by_name,
+            "structure_type_id",
+            results,
         ),
         "market_segment": lambda name, desc, row: _handle_simple_lookup(
-            lookup_manager, name, desc, MarketSegmentLookup, lookup_manager.insert_market_segment,
-            lookup_manager.get_market_segment_by_name, "market_segment_id", results
+            lookup_manager,
+            name,
+            desc,
+            MarketSegmentLookup,
+            lookup_manager.insert_market_segment,
+            lookup_manager.get_market_segment_by_name,
+            "market_segment_id",
+            results,
         ),
         "field_type": lambda name, desc, row: _handle_field_type(
             lookup_manager, name, desc, row, results
@@ -465,23 +506,23 @@ def process_long_format_lookup(
             lookup_manager, name, desc, row, results
         ),
     }
-    
+
     handler = handlers.get(config.lookup_table_type)
     if not handler:
         raise ValueError(f"Unknown lookup table type: {config.lookup_table_type}")
-    
+
     # Process each row
     for row in df.iter_rows(named=True):
         name = row["name"]
         validate_lookup_name(name, allowed_names, config.lookup_table_type)
         description = row.get("description")
-        
+
         try:
             handler(name, description, row)
         except Exception as e:
             context.log.error(f"Error processing row for {name}: {e}")
             raise
-    
+
     return results
 
 
@@ -613,9 +654,27 @@ def _handle_ticker_source(
 
 @asset(
     group_name="metadata",
-    description="Load lookup tables from CSV with validation against allowed names",
+    description="Initialize database schema - create all required tables",
     io_manager_key="passthrough_io_manager",
-    kinds=["csv","clickhouse"],
+    kinds=["clickhouse"],
+)
+def init_database_schema(
+    context: AssetExecutionContext,
+    clickhouse: ClickHouseResource,
+) -> str:
+    """Initialize database schema by creating all required tables."""
+    context.log.info("Initializing database schema...")
+    clickhouse.setup_schema()
+    context.log.info("Database schema initialized successfully")
+    return "Schema initialized"
+
+
+@asset(
+    group_name="metadata",
+    description="Load lookup tables from CSV with validation against allowed names",
+    deps=[AssetKey("init_database_schema")],  # Schema must be initialized first
+    io_manager_key="passthrough_io_manager",
+    kinds=["csv", "clickhouse"],
 )
 def load_lookup_tables_from_csv(
     context: AssetExecutionContext,
@@ -623,7 +682,7 @@ def load_lookup_tables_from_csv(
     clickhouse: ClickHouseResource,
 ) -> Dict[str, Any]:
     """Load lookup tables from CSV file with validation.
-    
+
     Supports two CSV formats:
     1. Wide format: Columns are lookup table types (asset_class, product_type, etc.)
        When in wide format and lookup_table_type is "all", processes all lookup tables.
@@ -636,14 +695,14 @@ def load_lookup_tables_from_csv(
 
     lookup_manager = LookupTableManager(clickhouse)
     available_columns = [col for col in LOOKUP_TABLE_COLUMNS if col in df.columns]
-    
+
     if available_columns:
         # Wide format: process all lookup tables
         context.log.info(f"Detected wide format with columns: {available_columns}")
         all_results = process_wide_format_lookup(
             context, lookup_manager, df, config, available_columns
         )
-        
+
         # Return results based on requested type
         if config.lookup_table_type != "all" and config.lookup_table_type in all_results:
             results = all_results[config.lookup_table_type]
@@ -670,7 +729,7 @@ def load_lookup_tables_from_csv(
                 f"lookup_table_type '{config.lookup_table_type}' not found in CSV columns. "
                 f"Available columns: {available_columns}"
             )
-    
+
     elif "name" in df.columns:
         # Long format: has lookup_table_type and name columns
         results = process_long_format_lookup(context, lookup_manager, df, config)
@@ -692,9 +751,12 @@ def load_lookup_tables_from_csv(
 @asset(
     group_name="metadata",
     description="Load meta series from CSV file",
-    deps=["load_lookup_tables_from_csv"],  # Depends on lookup tables being loaded first
+    deps=[
+        AssetKey("init_database_schema"),  # Schema must be initialized first
+        AssetKey("load_lookup_tables_from_csv"),  # Depends on lookup tables being loaded first
+    ],
     io_manager_key="passthrough_io_manager",
-    kinds=["csv","clickhouse"],
+    kinds=["csv", "clickhouse"],
 )
 def load_meta_series_from_csv(
     context: AssetExecutionContext,
@@ -734,15 +796,29 @@ def load_meta_series_from_csv(
                 series_code=str(row["series_code"]),
                 data_source=data_source,
                 field_type_id=safe_int(row.get("field_type_id"), "field_type_id", required=False),
-                asset_class_id=safe_int(row.get("asset_class_id"), "asset_class_id", required=False),
-                sub_asset_class_id=safe_int(row.get("sub_asset_class_id"), "sub_asset_class_id", required=False),
-                product_type_id=safe_int(row.get("product_type_id"), "product_type_id", required=False),
+                asset_class_id=safe_int(
+                    row.get("asset_class_id"), "asset_class_id", required=False
+                ),
+                sub_asset_class_id=safe_int(
+                    row.get("sub_asset_class_id"), "sub_asset_class_id", required=False
+                ),
+                product_type_id=safe_int(
+                    row.get("product_type_id"), "product_type_id", required=False
+                ),
                 data_type_id=safe_int(row.get("data_type_id"), "data_type_id", required=False),
-                structure_type_id=safe_int(row.get("structure_type_id"), "structure_type_id", required=False),
-                market_segment_id=safe_int(row.get("market_segment_id"), "market_segment_id", required=False),
-                ticker_source_id=safe_int(row.get("ticker_source_id"), "ticker_source_id", required=False),
+                structure_type_id=safe_int(
+                    row.get("structure_type_id"), "structure_type_id", required=False
+                ),
+                market_segment_id=safe_int(
+                    row.get("market_segment_id"), "market_segment_id", required=False
+                ),
+                ticker_source_id=safe_int(
+                    row.get("ticker_source_id"), "ticker_source_id", required=False
+                ),
                 ticker=str(row["ticker"]),
-                calculation_formula=str(row["calculation_formula"]) if row.get("calculation_formula") else None,
+                calculation_formula=str(row["calculation_formula"])
+                if row.get("calculation_formula")
+                else None,
                 description=str(row["description"]) if row.get("description") else None,
             )
 
@@ -754,9 +830,7 @@ def load_meta_series_from_csv(
                 )
                 results[meta_series.series_code] = existing["series_id"]
             else:
-                series_id = meta_manager.create_meta_series(
-                    meta_series, created_by="csv_loader"
-                )
+                series_id = meta_manager.create_meta_series(meta_series, created_by="csv_loader")
                 results[meta_series.series_code] = series_id
 
         except Exception as e:

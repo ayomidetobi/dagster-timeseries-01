@@ -2,7 +2,8 @@
 
 from datetime import datetime
 from enum import Enum
-from typing import Optional, List
+from typing import List, Optional
+
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -242,4 +243,3 @@ class DataQualityMetrics(BaseModel):
     consistency_score: float = Field(..., ge=0.0, le=1.0)
     overall_score: float = Field(..., ge=0.0, le=1.0)
     calculated_at: datetime
-

@@ -89,4 +89,3 @@ DEFAULT_WEIGHT_DIVISOR = 1.0  # For equal weight distribution
 # Query constants
 QUERY_LIMIT_DEFAULT = 1000
 QUERY_LIMIT_MAX = 10000
-

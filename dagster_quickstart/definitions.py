@@ -5,10 +5,10 @@ from dagster import (
     define_asset_job,
     load_assets_from_modules,
 )
-from dagster_clickhouse.resources import ClickHouseResource
-from dagster_clickhouse.io_manager import clickhouse_io_manager, passthrough_io_manager
-from dagster_quickstart.assets import ingestion, calculations, csv_loader
 
+from dagster_clickhouse.io_manager import clickhouse_io_manager, passthrough_io_manager
+from dagster_clickhouse.resources import ClickHouseResource
+from dagster_quickstart.assets import calculations, csv_loader, ingestion
 
 all_assets = load_assets_from_modules([ingestion, calculations, csv_loader])
 

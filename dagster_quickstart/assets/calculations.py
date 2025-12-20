@@ -1,40 +1,43 @@
 """Derived series calculation assets with dependency awareness."""
 
-from typing import List
+from typing import Any, List
+
 import pandas as pd
 from dagster import (
-    asset,
     AssetExecutionContext,
     AssetKey,
     Config,
     MetadataValue,
+    asset,
 )
-from dagster_clickhouse.resources import ClickHouseResource
-from database.meta_series import MetaSeriesManager
-from database.dependency import DependencyManager, CalculationLogManager
 
-from dagster_quickstart.utils.helpers import (
-    load_series_data_from_clickhouse,
-    get_or_validate_meta_series,
-    create_calculation_log,
-    update_calculation_log_on_success,
-    update_calculation_log_on_error,
-)
-from dagster_quickstart.utils.exceptions import (
-    MetaSeriesNotFoundError,
-    CalculationError,
-)
+from dagster_clickhouse.resources import ClickHouseResource
 from dagster_quickstart.utils.constants import (
     CALCULATION_TYPES,
     DEFAULT_SMA_WINDOW,
     DEFAULT_WEIGHT_DIVISOR,
 )
+from dagster_quickstart.utils.exceptions import (
+    CalculationError,
+    MetaSeriesNotFoundError,
+)
+from dagster_quickstart.utils.helpers import (
+    create_calculation_log,
+    get_or_validate_meta_series,
+    load_series_data_from_clickhouse,
+    update_calculation_log_on_error,
+    update_calculation_log_on_success,
+)
+from database.dependency import CalculationLogManager, DependencyManager
+from database.meta_series import MetaSeriesManager
 
 
 class CalculationConfig(Config):
     """Configuration for derived series calculation."""
 
-    derived_series_code: str = "COMPOSITE_001"
+    derived_series_code: str = (
+        "TECH_COMPOSITE"  # Must match series_code in meta_series.csv, not series_name
+    )
     formula: str = "parent1 * 0.5 + parent2 * 0.5"  # e.g., "parent1 * 0.6 + parent2 * 0.4"
     input_series_codes: List[str] = []  # List of input series codes
 
@@ -44,18 +47,19 @@ def customers() -> str:
     return "https://raw.githubusercontent.com/dbt-labs/jaffle-shop-classic/refs/heads/main/seeds/raw_customers.csv"
 
 
-
 @asset(
     group_name="calculations",
     description="Calculate a simple moving average derived series",
     deps=[
+        AssetKey("init_database_schema"),  # Database schema must be initialized first
+        AssetKey("load_meta_series_from_csv"),  # Meta series must exist before calculation
         AssetKey("ingest_bloomberg_data"),
         AssetKey("ingest_lseg_data"),
         AssetKey("ingest_hawkeye_data"),
         AssetKey("ingest_ramp_data"),
         AssetKey("ingest_onetick_data"),
-    ],  # Depends on ingestion assets completing first
-    kinds=["pandas","clickhouse"],
+    ],  # Depends on schema, metadata and ingestion assets completing first
+    kinds=["pandas", "clickhouse"],
 )
 def calculate_sma_series(
     context: AssetExecutionContext,
@@ -73,19 +77,15 @@ def calculate_sma_series(
     derived_series = get_or_validate_meta_series(
         meta_manager, config.derived_series_code, context, raise_if_not_found=True
     )
-    
+
     if derived_series is None:
-        raise MetaSeriesNotFoundError(
-            f"Derived series {config.derived_series_code} not found"
-        )
+        raise MetaSeriesNotFoundError(f"Derived series {config.derived_series_code} not found")
 
     # Get parent dependencies
     parent_deps = dep_manager.get_parent_dependencies(derived_series["series_id"])
 
     if not parent_deps:
-        raise CalculationError(
-            f"No parent dependencies found for {config.derived_series_code}"
-        )
+        raise CalculationError(f"No parent dependencies found for {config.derived_series_code}")
 
     # Start calculation log
     input_series_ids = [dep["parent_series_id"] for dep in parent_deps]
@@ -118,11 +118,7 @@ def calculate_sma_series(
             merged = merged.drop(columns=[col for col in merged.columns if col.endswith("_new")])
 
         # Calculate SMA (assuming formula contains window size, e.g., "SMA_20")
-        window = (
-            int(config.formula.split("_")[-1])
-            if "_" in config.formula
-            else DEFAULT_SMA_WINDOW
-        )
+        window = int(config.formula.split("_")[-1]) if "_" in config.formula else DEFAULT_SMA_WINDOW
         merged["value"] = merged["value"].rolling(window=window, min_periods=1).mean()
 
         # Prepare output
@@ -157,13 +153,15 @@ def calculate_sma_series(
     group_name="calculations",
     description="Calculate a weighted composite derived series",
     deps=[
+        AssetKey("init_database_schema"),  # Database schema must be initialized first
+        AssetKey("load_meta_series_from_csv"),  # Meta series must exist before calculation
         AssetKey("ingest_bloomberg_data"),
         AssetKey("ingest_lseg_data"),
         AssetKey("ingest_hawkeye_data"),
         AssetKey("ingest_ramp_data"),
         AssetKey("ingest_onetick_data"),
-    ],  # Depends on ingestion assets completing first
-    kinds=["pandas","clickhouse"],
+    ],  # Depends on schema, metadata and ingestion assets completing first
+    kinds=["pandas", "clickhouse"],
 )
 def calculate_weighted_composite(
     context: AssetExecutionContext,
@@ -214,7 +212,7 @@ def calculate_weighted_composite(
             raise CalculationError("No parent data found")
 
         # Merge all series on timestamp
-        all_timestamps = set()
+        all_timestamps = set[Any]()
         for data in parent_data.values():
             all_timestamps.update(data["data"]["timestamp"].tolist())
 
@@ -226,8 +224,8 @@ def calculate_weighted_composite(
         for parent_id, parent_info in parent_data.items():
             df = parent_info["data"]
             weight = parent_info["weight"]
-            merged = result_df.merge(df, on="timestamp", how="left")
-            result_df["value"] += merged["value"].fillna(0) * weight
+            merged = result_df.merge(df, on="timestamp", how="left", suffixes=("", "_y"))
+            result_df["value"] += merged["value_y"].fillna(0) * weight
 
         # Prepare output
         output_df = pd.DataFrame(
@@ -254,4 +252,3 @@ def calculate_weighted_composite(
     except Exception as e:
         update_calculation_log_on_error(calc_manager, calc_id, str(e))
         raise CalculationError(f"Calculation failed: {e}") from e
-

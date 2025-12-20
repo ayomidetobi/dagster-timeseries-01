@@ -1,12 +1,13 @@
 """Dependency graph and calculation log management."""
 
-from typing import Optional, List, Dict, Any
 from datetime import datetime
+from typing import Any, Dict, List, Optional
+
 from dagster_clickhouse.resources import ClickHouseResource
 from database.models import (
-    SeriesDependencyBase,
     CalculationLogBase,
     CalculationStatus,
+    SeriesDependencyBase,
 )
 
 
@@ -22,7 +23,9 @@ class DependencyManager:
         now = datetime.now()
 
         # Get next dependency_id
-        result = self.clickhouse.execute_query("SELECT max(dependency_id) FROM seriesDependencyGraph")
+        result = self.clickhouse.execute_query(
+            "SELECT max(dependency_id) FROM seriesDependencyGraph"
+        )
         if hasattr(result, "result_rows") and result.result_rows and result.result_rows[0][0]:
             next_id = result.result_rows[0][0] + 1
         else:
@@ -31,11 +34,10 @@ class DependencyManager:
         query = """
         INSERT INTO seriesDependencyGraph (
             dependency_id, parent_series_id, child_series_id, weight,
-            formula, valid_from, valid_to, created_at, updated_at
+            formula, created_at, updated_at
         ) VALUES (
             {id:UInt64}, {parent:UInt32}, {child:UInt32}, {weight:Float64},
-            {formula:String}, {valid_from:DateTime64(6)}, {valid_to:DateTime64(6)},
-            {now:DateTime64(3)}, {now:DateTime64(3)}
+            {formula:String}, {now:DateTime64(3)}, {now:DateTime64(3)}
         )
         """
 
@@ -46,9 +48,7 @@ class DependencyManager:
                 "parent": dependency.parent_series_id,
                 "child": dependency.child_series_id,
                 "weight": dependency.weight or 1.0,
-                "formula": dependency.formula,
-                "valid_from": dependency.valid_from,
-                "valid_to": dependency.valid_to,
+                "formula": dependency.formula or "",
                 "now": now,
             },
         )
@@ -60,7 +60,6 @@ class DependencyManager:
         query = """
         SELECT * FROM seriesDependencyGraph
         WHERE child_series_id = {child:UInt32}
-        AND (valid_to IS NULL OR valid_to > now())
         ORDER BY parent_series_id
         """
         result = self.clickhouse.execute_query(query, parameters={"child": child_series_id})
@@ -74,7 +73,6 @@ class DependencyManager:
         query = """
         SELECT * FROM seriesDependencyGraph
         WHERE parent_series_id = {parent:UInt32}
-        AND (valid_to IS NULL OR valid_to > now())
         ORDER BY child_series_id
         """
         result = self.clickhouse.execute_query(query, parameters={"parent": parent_series_id})
@@ -108,9 +106,7 @@ class DependencyManager:
         children = self.get_child_dependencies(series_id)
         if isinstance(tree.get("children"), list):
             for child_dep in children:
-                child_tree = self.get_dependency_tree(
-                    child_dep["child_series_id"], max_depth - 1
-                )
+                child_tree = self.get_dependency_tree(child_dep["child_series_id"], max_depth - 1)
                 tree["children"].append(
                     {
                         "dependency": child_dep,
@@ -140,12 +136,10 @@ class CalculationLogManager:
         query = """
         INSERT INTO calculationLog (
             calculation_id, series_id, calculation_type, status,
-            input_series_ids, parameters, formula, execution_start,
-            execution_end, rows_processed, error_message, created_at
+            input_series_ids, parameters, formula, rows_processed, error_message, created_at
         ) VALUES (
             {id:UInt64}, {series_id:UInt32}, {type:String}, {status:String},
-            {inputs:Array(UInt32)}, {params:String}, {formula:String}, {start:DateTime64(6)},
-            {end:DateTime64(6)}, {rows:UInt64}, {error:String}, {now:DateTime64(3)}
+            {inputs:Array(UInt32)}, {params:String}, {formula:String}, {rows:UInt64}, {error:String}, {now:DateTime64(3)}
         )
         """
 
@@ -157,12 +151,10 @@ class CalculationLogManager:
                 "type": calculation.calculation_type,
                 "status": str(calculation.status.value),
                 "inputs": calculation.input_series_ids,
-                "params": calculation.parameters,
-                "formula": calculation.formula,
-                "start": calculation.execution_start,
-                "end": calculation.execution_end,
-                "rows": calculation.rows_processed,
-                "error": calculation.error_message,
+                "params": calculation.parameters or "",
+                "formula": calculation.formula or "",
+                "rows": calculation.rows_processed or 0,
+                "error": calculation.error_message or "",
                 "now": datetime.now(),
             },
         )
@@ -178,25 +170,28 @@ class CalculationLogManager:
         error_message: Optional[str] = None,
     ) -> None:
         """Update a calculation log entry."""
-        query = """
+        # Build update query dynamically based on what's provided
+        updates = [f"status = {{status:String}}"]
+        params = {
+            "id": calculation_id,
+            "status": str(status.value),
+        }
+
+        if rows_processed is not None:
+            updates.append("rows_processed = {rows:UInt64}")
+            params["rows"] = rows_processed
+
+        if error_message is not None:
+            updates.append("error_message = {error:String}")
+            params["error"] = error_message
+
+        query = f"""
         ALTER TABLE calculationLog
-        UPDATE status = {status:String},
-               execution_end = {end:DateTime64(6)},
-               rows_processed = {rows:UInt64},
-               error_message = {error:String}
-        WHERE calculation_id = {id:UInt64}
+        UPDATE {', '.join(updates)}
+        WHERE calculation_id = {{id:UInt64}}
         """
 
-        self.clickhouse.execute_command(
-            query,
-            parameters={
-                "id": calculation_id,
-                "status": str(status.value),
-                "end": execution_end,
-                "rows": rows_processed,
-                "error": error_message,
-            },
-        )
+        self.clickhouse.execute_command(query, parameters=params)
 
     def get_calculation_logs(
         self,
@@ -216,7 +211,7 @@ class CalculationLogManager:
             query += " AND status = {status:String}"
             params["status"] = str(status.value)
 
-        query += " ORDER BY execution_start DESC LIMIT {limit:UInt32}"
+        query += " ORDER BY created_at DESC LIMIT {limit:UInt32}"
         params["limit"] = limit
 
         result = self.clickhouse.execute_query(query, parameters=params)
@@ -224,4 +219,3 @@ class CalculationLogManager:
             columns = result.column_names
             return [dict(zip(columns, row)) for row in result.result_rows]
         return []
-

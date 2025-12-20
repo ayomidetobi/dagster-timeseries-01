@@ -1,22 +1,23 @@
 """Database utility functions for common operations."""
 
-from typing import Optional, Dict, Any, List
 from datetime import datetime
+from typing import Any, Dict, List, Optional
+
 from dagster_clickhouse.resources import ClickHouseResource
 
 
 def get_next_id(clickhouse: ClickHouseResource, table_name: str, id_column: str) -> int:
     """Get the next ID for a table by querying max ID.
-    
+
     Args:
         clickhouse: ClickHouse resource
         table_name: Name of the table
         id_column: Name of the ID column
-    
+
     Returns:
         Next ID to use (max + 1, or 1 if table is empty)
     """
-    query = f"SELECT max({id_column}) FROM {table_name}"  # noqa: F541
+    query = f"SELECT max({id_column}) FROM {table_name}"
     result = clickhouse.execute_query(query)
     if hasattr(result, "result_rows") and result.result_rows and result.result_rows[0][0]:
         return result.result_rows[0][0] + 1
@@ -30,13 +31,13 @@ def get_by_name(
     name: str,
 ) -> Optional[Dict[str, Any]]:
     """Get a record by name from any lookup table.
-    
+
     Args:
         clickhouse: ClickHouse resource
         table_name: Name of the table
         name_column: Name of the name column
         name: Name to search for
-    
+
     Returns:
         Dictionary with record data or None if not found
     """
@@ -57,7 +58,7 @@ def execute_update_query(
     now: Optional[datetime] = None,
 ) -> None:
     """Execute an UPDATE query using ALTER TABLE.
-    
+
     Args:
         clickhouse: ClickHouse resource
         table_name: Name of the table
@@ -68,11 +69,11 @@ def execute_update_query(
     """
     if now is None:
         now = datetime.now()
-    
+
     # Build SET clause
     set_clauses = []
     params = {"id": record_id, "now": now}
-    
+
     for field_name, value in update_fields.items():
         if value is None:
             continue
@@ -93,19 +94,19 @@ def execute_update_query(
         else:
             set_clauses.append(f"{field_name} = {{field_{field_name}:String}}")
             params[f"field_{field_name}"] = str(value) if value is not None else None
-    
+
     # Add updated_at
     set_clauses.append("updated_at = {now:DateTime64(3)}")
-    
+
     if not set_clauses:
         return  # Nothing to update
-    
+
     query = f"""
     ALTER TABLE {table_name}
     UPDATE {', '.join(set_clauses)}
     WHERE {id_column} = {{id:UInt32}}
     """
-    
+
     clickhouse.execute_command(query, parameters=params)
 
 
@@ -118,7 +119,7 @@ def execute_insert_query(
     now: Optional[datetime] = None,
 ) -> None:
     """Execute an INSERT query.
-    
+
     Args:
         clickhouse: ClickHouse resource
         table_name: Name of the table
@@ -129,12 +130,12 @@ def execute_insert_query(
     """
     if now is None:
         now = datetime.now()
-    
+
     # Build columns and values (only include non-None fields)
     columns = [id_column]
-    value_placeholders = [f"{{id:UInt32}}"]
+    value_placeholders = ["{id:UInt32}"]
     params = {"id": record_id, "now": now}
-    
+
     for field_name, value in insert_fields.items():
         if value is None:
             continue
@@ -156,15 +157,15 @@ def execute_insert_query(
         else:
             value_placeholders.append(f"{{field_{field_name}:String}}")
             params[f"field_{field_name}"] = str(value) if value is not None else None
-    
+
     columns.extend(["created_at", "updated_at"])
     value_placeholders.extend(["{now:DateTime64(3)}", "{now:DateTime64(3)}"])
-    
+
     query = f"""
     INSERT INTO {table_name} ({', '.join(columns)})
     VALUES ({', '.join(value_placeholders)})
     """
-    
+
     clickhouse.execute_command(query, parameters=params)
 
 
@@ -172,16 +173,16 @@ def query_to_dict_list(
     result: Any,
 ) -> List[Dict[str, Any]]:
     """Convert ClickHouse query result to list of dictionaries.
-    
+
     Args:
         result: ClickHouse query result
-    
+
     Returns:
         List of dictionaries, one per row
     """
     if not hasattr(result, "column_names") or not hasattr(result, "result_rows"):
         return []
-    
+
     columns = result.column_names
     return [dict(zip(columns, row)) for row in result.result_rows]
 
@@ -190,16 +191,15 @@ def query_to_dict(
     result: Any,
 ) -> Optional[Dict[str, Any]]:
     """Convert ClickHouse query result to single dictionary (first row).
-    
+
     Args:
         result: ClickHouse query result
-    
+
     Returns:
         Dictionary with first row data or None if no rows
     """
     if not hasattr(result, "result_rows") or not result.result_rows:
         return None
-    
+
     columns = result.column_names
     return dict(zip(columns, result.result_rows[0]))
-

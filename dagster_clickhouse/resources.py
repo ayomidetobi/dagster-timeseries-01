@@ -1,13 +1,13 @@
 """Dagster resources for the financial platform."""
 
 from contextlib import contextmanager
-from typing import Iterator, Optional, Any
+from typing import Any, Iterator, Optional
+
 import clickhouse_connect
 from clickhouse_connect.driver import Client
 from dagster import ConfigurableResource, InitResourceContext
-
-
 from decouple import config
+
 
 class ClickHouseResource(ConfigurableResource):
     """ClickHouse database resource for Dagster."""
@@ -86,7 +86,7 @@ class ClickHouseResource(ConfigurableResource):
 
     def setup_schema(self) -> None:
         """Set up all table schemas."""
-        from dagster_clickhouse.schemas import ClickHouseSchema
+        from database.schemas import ClickHouseSchema
 
         self.ensure_database()
 

@@ -1,16 +1,27 @@
 """ClickHouse IO Manager for Dagster assets."""
 
-from typing import Any, Optional
-import pandas as pd
 from datetime import datetime
+from typing import Any
+
+import pandas as pd
 from dagster import (
     ConfigurableIOManager,
     InputContext,
     OutputContext,
     io_manager,
 )
+
 from dagster_clickhouse.resources import ClickHouseResource
-from database.models import TimeSeriesValue, TimeSeriesBatch
+from database.models import TimeSeriesBatch, TimeSeriesValue
+
+# Try to import polars, but make it optional
+try:
+    import polars as pl
+
+    POLARS_AVAILABLE = True
+except ImportError:
+    pl = None  # type: ignore
+    POLARS_AVAILABLE = False
 
 
 class ClickHouseIOManager(ConfigurableIOManager):
@@ -24,6 +35,11 @@ class ClickHouseIOManager(ConfigurableIOManager):
         """Handle output from assets - store data in ClickHouse."""
         if obj is None:
             return
+
+        # Handle Polars DataFrame - convert to pandas
+        if POLARS_AVAILABLE and isinstance(obj, pl.DataFrame):
+            context.log.debug("Converting Polars DataFrame to pandas DataFrame")
+            obj = obj.to_pandas()
 
         # Handle pandas DataFrame
         if isinstance(obj, pd.DataFrame):
@@ -107,9 +123,7 @@ class ClickHouseIOManager(ConfigurableIOManager):
 
         context.log.info(f"Inserted {len(data)} rows into {self.table_name}")
 
-    def _insert_timeseries_batch(
-        self, context: OutputContext, batch: TimeSeriesBatch
-    ) -> None:
+    def _insert_timeseries_batch(self, context: OutputContext, batch: TimeSeriesBatch) -> None:
         """Insert TimeSeriesBatch into ClickHouse."""
         data = []
         now = datetime.now()
@@ -167,4 +181,3 @@ class PassthroughIOManager(ConfigurableIOManager):
 def passthrough_io_manager(context) -> PassthroughIOManager:
     """Factory function for Passthrough IO Manager."""
     return PassthroughIOManager()
-

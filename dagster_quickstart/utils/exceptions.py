@@ -59,4 +59,3 @@ class RecordNotFoundError(DatabaseError):
     """Raised when a requested record is not found."""
 
     pass
-

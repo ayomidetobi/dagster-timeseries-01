@@ -1,9 +1,10 @@
 """Meta series management for the financial platform."""
 
-from typing import Optional, List, Dict, Any
 from datetime import datetime
+from typing import Any, Dict, List, Optional
+
 from dagster_clickhouse.resources import ClickHouseResource
-from database.models import MetaSeriesCreate, MetaSeries, DataSource
+from database.models import DataSource, MetaSeriesCreate
 from database.utils import get_next_id, query_to_dict, query_to_dict_list
 
 # Constants to avoid circular imports
@@ -18,7 +19,9 @@ class MetaSeriesManager:
         """Initialize with ClickHouse resource."""
         self.clickhouse = clickhouse
 
-    def create_meta_series(self, meta_series: MetaSeriesCreate, created_by: Optional[str] = None) -> int:
+    def create_meta_series(
+        self, meta_series: MetaSeriesCreate, created_by: Optional[str] = None
+    ) -> int:
         """Create a new meta series."""
         now = datetime.now()
 
@@ -26,14 +29,22 @@ class MetaSeriesManager:
         next_id = get_next_id(self.clickhouse, META_SERIES_TABLE, "series_id")
 
         # Build query with NULL handling for optional ID fields
-        field_id_val = f"{{field_id:UInt32}}" if meta_series.field_type_id is not None else "NULL"
-        asset_id_val = f"{{asset_id:UInt32}}" if meta_series.asset_class_id is not None else "NULL"
-        sub_asset_id_val = f"{{sub_asset_id:UInt32}}" if meta_series.sub_asset_class_id is not None else "NULL"
-        product_id_val = f"{{product_id:UInt32}}" if meta_series.product_type_id is not None else "NULL"
-        data_id_val = f"{{data_id:UInt32}}" if meta_series.data_type_id is not None else "NULL"
-        struct_id_val = f"{{struct_id:UInt32}}" if meta_series.structure_type_id is not None else "NULL"
-        market_id_val = f"{{market_id:UInt32}}" if meta_series.market_segment_id is not None else "NULL"
-        ticker_id_val = f"{{ticker_id:UInt32}}" if meta_series.ticker_source_id is not None else "NULL"
+        field_id_val = "{field_id:UInt32}" if meta_series.field_type_id is not None else "NULL"
+        asset_id_val = "{asset_id:UInt32}" if meta_series.asset_class_id is not None else "NULL"
+        sub_asset_id_val = (
+            "{sub_asset_id:UInt32}" if meta_series.sub_asset_class_id is not None else "NULL"
+        )
+        product_id_val = (
+            "{product_id:UInt32}" if meta_series.product_type_id is not None else "NULL"
+        )
+        data_id_val = "{data_id:UInt32}" if meta_series.data_type_id is not None else "NULL"
+        struct_id_val = (
+            "{struct_id:UInt32}" if meta_series.structure_type_id is not None else "NULL"
+        )
+        market_id_val = (
+            "{market_id:UInt32}" if meta_series.market_segment_id is not None else "NULL"
+        )
+        ticker_id_val = "{ticker_id:UInt32}" if meta_series.ticker_source_id is not None else "NULL"
 
         query = f"""
         INSERT INTO {META_SERIES_TABLE} (
@@ -178,14 +189,22 @@ class MetaSeriesManager:
             next_version = 1
 
         # Build query with NULL handling for optional ID fields
-        field_id_val = f"{{field_id:UInt32}}" if meta_series.field_type_id is not None else "NULL"
-        asset_id_val = f"{{asset_id:UInt32}}" if meta_series.asset_class_id is not None else "NULL"
-        sub_asset_id_val = f"{{sub_asset_id:UInt32}}" if meta_series.sub_asset_class_id is not None else "NULL"
-        product_id_val = f"{{product_id:UInt32}}" if meta_series.product_type_id is not None else "NULL"
-        data_id_val = f"{{data_id:UInt32}}" if meta_series.data_type_id is not None else "NULL"
-        struct_id_val = f"{{struct_id:UInt32}}" if meta_series.structure_type_id is not None else "NULL"
-        market_id_val = f"{{market_id:UInt32}}" if meta_series.market_segment_id is not None else "NULL"
-        ticker_id_val = f"{{ticker_id:UInt32}}" if meta_series.ticker_source_id is not None else "NULL"
+        field_id_val = "{field_id:UInt32}" if meta_series.field_type_id is not None else "NULL"
+        asset_id_val = "{asset_id:UInt32}" if meta_series.asset_class_id is not None else "NULL"
+        sub_asset_id_val = (
+            "{sub_asset_id:UInt32}" if meta_series.sub_asset_class_id is not None else "NULL"
+        )
+        product_id_val = (
+            "{product_id:UInt32}" if meta_series.product_type_id is not None else "NULL"
+        )
+        data_id_val = "{data_id:UInt32}" if meta_series.data_type_id is not None else "NULL"
+        struct_id_val = (
+            "{struct_id:UInt32}" if meta_series.structure_type_id is not None else "NULL"
+        )
+        market_id_val = (
+            "{market_id:UInt32}" if meta_series.market_segment_id is not None else "NULL"
+        )
+        ticker_id_val = "{ticker_id:UInt32}" if meta_series.ticker_source_id is not None else "NULL"
 
         query = f"""
         INSERT INTO {META_SERIES_TABLE} (
@@ -237,4 +256,3 @@ class MetaSeriesManager:
         self.clickhouse.execute_command(query, parameters=params)
 
         return series_id
-
