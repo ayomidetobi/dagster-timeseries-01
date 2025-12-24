@@ -16,6 +16,7 @@ dagster-cloud==1.12.6
 dagster-cloud-cli==1.12.6
 dagster-graphql==1.12.6
 dagster-pipes==1.12.6
+dagster-polars==0.27.8
 dagster-webserver==1.12.6
 -e git+https://github.com/dagster-io/dagster-quickstart@089e7091a08ec1be97c9f43aad629c68f7d71270#egg=dagster_quickstart
 dagster_shared==1.12.6
@@ -63,6 +64,7 @@ polars-runtime-32==1.36.1
 prompt_toolkit==3.0.52
 propcache==0.4.1
 protobuf==6.33.2
+pyarrow==22.0.0
 pycparser==2.23
 pydantic==2.12.5
 pydantic_core==2.41.5

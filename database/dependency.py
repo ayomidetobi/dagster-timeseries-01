@@ -171,7 +171,7 @@ class CalculationLogManager:
     ) -> None:
         """Update a calculation log entry."""
         # Build update query dynamically based on what's provided
-        updates = [f"status = {{status:String}}"]
+        updates = ["status = {status:String}"]
         params = {
             "id": calculation_id,
             "status": str(status.value),

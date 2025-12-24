@@ -5,8 +5,10 @@ from typing import Any, Iterator, Optional
 
 import clickhouse_connect
 from clickhouse_connect.driver import Client
-from dagster import ConfigurableResource, InitResourceContext
+from dagster import ConfigurableResource, InitResourceContext, get_dagster_logger
 from decouple import config
+
+logger = get_dagster_logger()
 
 
 class ClickHouseResource(ConfigurableResource):
@@ -97,7 +99,7 @@ class ClickHouseResource(ConfigurableResource):
                     client.command(schema_sql)
                 except Exception as e:
                     # Log error but continue
-                    print(f"Warning: Could not create table {table_name}: {e}")
+                    logger.warning(f"Could not create table {table_name}: {e}")
 
             # Create indexes
             for index_sql in ClickHouseSchema.get_indexes():
@@ -105,7 +107,7 @@ class ClickHouseResource(ConfigurableResource):
                     client.command(index_sql)
                 except Exception as e:
                     # Log error but continue
-                    print(f"Warning: Could not create index: {e}")
+                    logger.warning(f"Could not create index: {e}")
 
 
 def init_clickhouse_resource(context: InitResourceContext) -> ClickHouseResource:

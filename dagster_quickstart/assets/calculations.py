@@ -42,7 +42,11 @@ class CalculationConfig(Config):
     input_series_codes: List[str] = []  # List of input series codes
 
 
-@asset(kinds=["source"])
+@asset(
+    kinds=["source"],
+    owners=["team:mqrm-data-eng"],
+    tags={"m360-mqrm": ""},
+)
 def customers() -> str:
     return "https://raw.githubusercontent.com/dbt-labs/jaffle-shop-classic/refs/heads/main/seeds/raw_customers.csv"
 
@@ -60,6 +64,8 @@ def customers() -> str:
         AssetKey("ingest_onetick_data"),
     ],  # Depends on schema, metadata and ingestion assets completing first
     kinds=["pandas", "clickhouse"],
+    owners=["team:mqrm-data-eng"],
+    tags={"m360-mqrm": ""},
 )
 def calculate_sma_series(
     context: AssetExecutionContext,
@@ -162,6 +168,8 @@ def calculate_sma_series(
         AssetKey("ingest_onetick_data"),
     ],  # Depends on schema, metadata and ingestion assets completing first
     kinds=["pandas", "clickhouse"],
+    owners=["team:mqrm-data-eng"],
+    tags={"m360-mqrm": ""},
 )
 def calculate_weighted_composite(
     context: AssetExecutionContext,

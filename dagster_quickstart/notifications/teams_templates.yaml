@@ -1,0 +1,22 @@
+failure:
+  title: "Job Failed: {job_name}"
+  fields:
+    - name: "Run ID"
+      value: "{run_id}"
+    - name: "Error Message"
+      value: "{error_message}"
+    - name: "Run URL"
+      value: "{run_url}"
+  footer: "Please check the Dagster UI for more details."
+
+success:
+  title: "Job Succeeded: {job_name}"
+  fields:
+    - name: "Run ID"
+      value: "{run_id}"
+    - name: "Duration"
+      value: "{duration}"
+    - name: "Run URL"
+      value: "{run_url}"
+  footer: "Job completed successfully."
+

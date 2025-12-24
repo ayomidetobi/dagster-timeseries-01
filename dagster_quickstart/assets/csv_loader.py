@@ -1,5 +1,6 @@
 """CSV-based loading for lookup tables and meta series with validation."""
 
+from datetime import datetime
 from typing import Any, Callable, Dict, Optional, Set
 
 import polars as pl
@@ -124,10 +125,10 @@ def process_simple_lookup_type(
         Dictionary mapping name to lookup_id
     """
     results = {}
-    for name in values:
-        if not name or str(name).strip() == "":
+    for name_value in values:
+        if not name_value or str(name_value).strip() == "":
             continue
-        name = str(name).strip()
+        name = str(name_value).strip()
         validate_lookup_name(name, allowed_names, lookup_type)
 
         try:
@@ -157,10 +158,10 @@ def process_asset_class_lookup(
         Dictionary mapping asset_class name to asset_class_id
     """
     asset_class_mapping = {}
-    for name in values:
-        if not name or str(name).strip() == "":
+    for name_value in values:
+        if not name_value or str(name_value).strip() == "":
             continue
-        name = str(name).strip()
+        name = str(name_value).strip()
         validate_lookup_name(name, allowed_names, "asset_class")
 
         try:
@@ -205,10 +206,10 @@ def process_code_based_lookup_type(
         Dictionary mapping name to lookup_id
     """
     results = {}
-    for name in values:
-        if not name or str(name).strip() == "":
+    for name_value in values:
+        if not name_value or str(name_value).strip() == "":
             continue
-        name = str(name).strip()
+        name = str(name_value).strip()
         validate_lookup_name(name, allowed_names, lookup_type)
 
         try:
@@ -235,10 +236,10 @@ def process_product_type_lookup(
 ) -> Dict[str, int]:
     """Process product_type lookup (has is_derived flag)."""
     results = {}
-    for name in values:
-        if not name or str(name).strip() == "":
+    for name_value in values:
+        if not name_value or str(name_value).strip() == "":
             continue
-        name = str(name).strip()
+        name = str(name_value).strip()
         validate_lookup_name(name, allowed_names, "product_type")
 
         try:
@@ -312,86 +313,125 @@ def process_wide_format_lookup(
     all_results: Dict[str, Any] = {}
     asset_class_mapping: Dict[str, int] = {}
 
+    # Helper functions for creating lookup objects
+    def create_data_type_lookup(name: str, description: Optional[str]) -> DataTypeLookup:
+        """Create a DataTypeLookup object."""
+        return DataTypeLookup(name=name, description=description)
+
+    def create_structure_type_lookup(name: str, description: Optional[str]) -> StructureTypeLookup:
+        """Create a StructureTypeLookup object."""
+        return StructureTypeLookup(name=name, description=description)
+
+    def create_market_segment_lookup(name: str, description: Optional[str]) -> MarketSegmentLookup:
+        """Create a MarketSegmentLookup object."""
+        return MarketSegmentLookup(name=name, description=description)
+
+    def create_field_type_lookup(
+        name: str, description: Optional[str], field_type_code: str
+    ) -> FieldTypeLookup:
+        """Create a FieldTypeLookup object."""
+        return FieldTypeLookup(name=name, description=description, field_type_code=field_type_code)
+
+    def create_ticker_source_lookup(
+        name: str, description: Optional[str], ticker_source_code: str
+    ) -> TickerSourceLookup:
+        """Create a TickerSourceLookup object."""
+        return TickerSourceLookup(
+            name=name, description=description, ticker_source_code=ticker_source_code
+        )
+
+    # Processor functions for each lookup type
+    def process_asset_class(values: list, allowed_names: Set[str]) -> Dict[str, int]:
+        """Process asset_class lookup values."""
+        return process_asset_class_lookup(context, lookup_manager, values, allowed_names)
+
+    def process_product_type(values: list, allowed_names: Set[str]) -> Dict[str, int]:
+        """Process product_type lookup values."""
+        return process_product_type_lookup(context, lookup_manager, values, allowed_names)
+
+    def process_data_type(values: list, allowed_names: Set[str]) -> Dict[str, int]:
+        """Process data_type lookup values."""
+        return process_simple_lookup_type(
+            context,
+            lookup_manager,
+            "data_type",
+            values,
+            allowed_names,
+            create_data_type_lookup,
+            lookup_manager.insert_data_type,
+            lookup_manager.get_data_type_by_name,
+            "data_type_id",
+        )
+
+    def process_structure_type(values: list, allowed_names: Set[str]) -> Dict[str, int]:
+        """Process structure_type lookup values."""
+        return process_simple_lookup_type(
+            context,
+            lookup_manager,
+            "structure_type",
+            values,
+            allowed_names,
+            create_structure_type_lookup,
+            lookup_manager.insert_structure_type,
+            lookup_manager.get_structure_type_by_name,
+            "structure_type_id",
+        )
+
+    def process_market_segment(values: list, allowed_names: Set[str]) -> Dict[str, int]:
+        """Process market_segment lookup values."""
+        return process_simple_lookup_type(
+            context,
+            lookup_manager,
+            "market_segment",
+            values,
+            allowed_names,
+            create_market_segment_lookup,
+            lookup_manager.insert_market_segment,
+            lookup_manager.get_market_segment_by_name,
+            "market_segment_id",
+        )
+
+    def process_field_type(values: list, allowed_names: Set[str]) -> Dict[str, int]:
+        """Process field_type lookup values."""
+        return process_code_based_lookup_type(
+            context,
+            lookup_manager,
+            "field_type",
+            values,
+            allowed_names,
+            create_field_type_lookup,
+            lookup_manager.insert_field_type,
+            lookup_manager.get_field_type_by_name,
+            "field_type_id",
+        )
+
+    def process_ticker_source(values: list, allowed_names: Set[str]) -> Dict[str, int]:
+        """Process ticker_source lookup values."""
+        return process_code_based_lookup_type(
+            context,
+            lookup_manager,
+            "ticker_source",
+            values,
+            allowed_names,
+            create_ticker_source_lookup,
+            lookup_manager.insert_ticker_source,
+            lookup_manager.get_ticker_source_by_name,
+            "ticker_source_id",
+        )
+
+    def get_asset_class_mapping() -> Dict[str, int]:
+        """Get the asset_class mapping."""
+        return asset_class_mapping
+
     # Define lookup type processors
     lookup_processors = {
-        "asset_class": (
-            lambda v, a: process_asset_class_lookup(context, lookup_manager, v, a),
-            lambda: asset_class_mapping,
-        ),
-        "product_type": (
-            lambda v, a: process_product_type_lookup(context, lookup_manager, v, a),
-            None,
-        ),
-        "data_type": (
-            lambda v, a: process_simple_lookup_type(
-                context,
-                lookup_manager,
-                "data_type",
-                v,
-                a,
-                lambda n, d: DataTypeLookup(name=n, description=d),
-                lookup_manager.insert_data_type,
-                lookup_manager.get_data_type_by_name,
-                "data_type_id",
-            ),
-            None,
-        ),
-        "structure_type": (
-            lambda v, a: process_simple_lookup_type(
-                context,
-                lookup_manager,
-                "structure_type",
-                v,
-                a,
-                lambda n, d: StructureTypeLookup(name=n, description=d),
-                lookup_manager.insert_structure_type,
-                lookup_manager.get_structure_type_by_name,
-                "structure_type_id",
-            ),
-            None,
-        ),
-        "market_segment": (
-            lambda v, a: process_simple_lookup_type(
-                context,
-                lookup_manager,
-                "market_segment",
-                v,
-                a,
-                lambda n, d: MarketSegmentLookup(name=n, description=d),
-                lookup_manager.insert_market_segment,
-                lookup_manager.get_market_segment_by_name,
-                "market_segment_id",
-            ),
-            None,
-        ),
-        "field_type": (
-            lambda v, a: process_code_based_lookup_type(
-                context,
-                lookup_manager,
-                "field_type",
-                v,
-                a,
-                lambda n, d, c: FieldTypeLookup(name=n, description=d, field_type_code=c),
-                lookup_manager.insert_field_type,
-                lookup_manager.get_field_type_by_name,
-                "field_type_id",
-            ),
-            None,
-        ),
-        "ticker_source": (
-            lambda v, a: process_code_based_lookup_type(
-                context,
-                lookup_manager,
-                "ticker_source",
-                v,
-                a,
-                lambda n, d, c: TickerSourceLookup(name=n, description=d, ticker_source_code=c),
-                lookup_manager.insert_ticker_source,
-                lookup_manager.get_ticker_source_by_name,
-                "ticker_source_id",
-            ),
-            None,
-        ),
+        "asset_class": (process_asset_class, get_asset_class_mapping),
+        "product_type": (process_product_type, None),
+        "data_type": (process_data_type, None),
+        "structure_type": (process_structure_type, None),
+        "market_segment": (process_market_segment, None),
+        "field_type": (process_field_type, None),
+        "ticker_source": (process_ticker_source, None),
     }
 
     # Process independent lookup types first
@@ -458,53 +498,76 @@ def process_long_format_lookup(
 
     results: Dict[str, int] = {}
 
-    # Define handlers for each lookup type
-    handlers = {
-        "asset_class": lambda name, desc, row: _handle_asset_class(
-            lookup_manager, name, desc, results
-        ),
-        "product_type": lambda name, desc, row: _handle_product_type(
-            lookup_manager, name, desc, row, results
-        ),
-        "sub_asset_class": lambda name, desc, row: _handle_sub_asset_class(
-            lookup_manager, name, desc, row, results
-        ),
-        "data_type": lambda name, desc, row: _handle_simple_lookup(
+    # Handler functions for each lookup type
+    def handle_asset_class(name: str, description: Optional[str], row: Dict[str, Any]) -> None:
+        """Handle asset_class insertion for long format."""
+        _handle_asset_class(lookup_manager, name, description, results)
+
+    def handle_product_type(name: str, description: Optional[str], row: Dict[str, Any]) -> None:
+        """Handle product_type insertion for long format."""
+        _handle_product_type(lookup_manager, name, description, row, results)
+
+    def handle_sub_asset_class(name: str, description: Optional[str], row: Dict[str, Any]) -> None:
+        """Handle sub_asset_class insertion for long format."""
+        _handle_sub_asset_class(lookup_manager, name, description, row, results)
+
+    def handle_data_type(name: str, description: Optional[str], row: Dict[str, Any]) -> None:
+        """Handle data_type insertion for long format."""
+        _handle_simple_lookup(
             lookup_manager,
             name,
-            desc,
+            description,
             DataTypeLookup,
             lookup_manager.insert_data_type,
             lookup_manager.get_data_type_by_name,
             "data_type_id",
             results,
-        ),
-        "structure_type": lambda name, desc, row: _handle_simple_lookup(
+        )
+
+    def handle_structure_type(name: str, description: Optional[str], row: Dict[str, Any]) -> None:
+        """Handle structure_type insertion for long format."""
+        _handle_simple_lookup(
             lookup_manager,
             name,
-            desc,
+            description,
             StructureTypeLookup,
             lookup_manager.insert_structure_type,
             lookup_manager.get_structure_type_by_name,
             "structure_type_id",
             results,
-        ),
-        "market_segment": lambda name, desc, row: _handle_simple_lookup(
+        )
+
+    def handle_market_segment(name: str, description: Optional[str], row: Dict[str, Any]) -> None:
+        """Handle market_segment insertion for long format."""
+        _handle_simple_lookup(
             lookup_manager,
             name,
-            desc,
+            description,
             MarketSegmentLookup,
             lookup_manager.insert_market_segment,
             lookup_manager.get_market_segment_by_name,
             "market_segment_id",
             results,
-        ),
-        "field_type": lambda name, desc, row: _handle_field_type(
-            lookup_manager, name, desc, row, results
-        ),
-        "ticker_source": lambda name, desc, row: _handle_ticker_source(
-            lookup_manager, name, desc, row, results
-        ),
+        )
+
+    def handle_field_type(name: str, description: Optional[str], row: Dict[str, Any]) -> None:
+        """Handle field_type insertion for long format."""
+        _handle_field_type(lookup_manager, name, description, row, results)
+
+    def handle_ticker_source(name: str, description: Optional[str], row: Dict[str, Any]) -> None:
+        """Handle ticker_source insertion for long format."""
+        _handle_ticker_source(lookup_manager, name, description, row, results)
+
+    # Define handlers for each lookup type
+    handlers = {
+        "asset_class": handle_asset_class,
+        "product_type": handle_product_type,
+        "sub_asset_class": handle_sub_asset_class,
+        "data_type": handle_data_type,
+        "structure_type": handle_structure_type,
+        "market_segment": handle_market_segment,
+        "field_type": handle_field_type,
+        "ticker_source": handle_ticker_source,
     }
 
     handler = handlers.get(config.lookup_table_type)
@@ -655,32 +718,37 @@ def _handle_ticker_source(
 @asset(
     group_name="metadata",
     description="Initialize database schema - create all required tables",
-    io_manager_key="passthrough_io_manager",
+    io_manager_key="polars_parquet_io_manager",
     kinds=["clickhouse"],
+    owners=["team:mqrm-data-eng"],
+    tags={"m360-mqrm": ""},
 )
 def init_database_schema(
     context: AssetExecutionContext,
     clickhouse: ClickHouseResource,
-) -> str:
+) -> pl.DataFrame:
     """Initialize database schema by creating all required tables."""
     context.log.info("Initializing database schema...")
     clickhouse.setup_schema()
     context.log.info("Database schema initialized successfully")
-    return "Schema initialized"
+    # Return as DataFrame for polars_parquet_io_manager
+    return pl.DataFrame({"status": ["Schema initialized"], "timestamp": [datetime.now()]})
 
 
 @asset(
     group_name="metadata",
     description="Load lookup tables from CSV with validation against allowed names",
     deps=[AssetKey("init_database_schema")],  # Schema must be initialized first
-    io_manager_key="passthrough_io_manager",
+    io_manager_key="polars_parquet_io_manager",
     kinds=["csv", "clickhouse"],
+    owners=["team:mqrm-data-eng"],
+    tags={"m360-mqrm": ""},
 )
 def load_lookup_tables_from_csv(
     context: AssetExecutionContext,
     config: LookupTableCSVConfig,
     clickhouse: ClickHouseResource,
-) -> Dict[str, Any]:
+) -> pl.DataFrame:
     """Load lookup tables from CSV file with validation.
 
     Supports two CSV formats:
@@ -706,16 +774,29 @@ def load_lookup_tables_from_csv(
         # Return results based on requested type
         if config.lookup_table_type != "all" and config.lookup_table_type in all_results:
             results = all_results[config.lookup_table_type]
+            # Convert dictionary to Polars DataFrame
+            result_df = pl.DataFrame(
+                [
+                    {"lookup_table_type": config.lookup_table_type, "name": name, "id": id_val}
+                    for name, id_val in results.items()
+                ]
+            )
             context.add_output_metadata(
                 {
-                    "lookups_loaded": MetadataValue.int(len(results)),
+                    "lookups_loaded": MetadataValue.int(len(result_df)),
                     "lookup_table_type": MetadataValue.text(config.lookup_table_type),
                     "details": MetadataValue.json(results),
                 }
             )
-            return results
+            return result_df
         elif config.lookup_table_type == "all":
             total_loaded = sum(len(v) for v in all_results.values())
+            # Convert all results to a single DataFrame
+            rows = []
+            for lookup_type, type_results in all_results.items():
+                for name, id_val in type_results.items():
+                    rows.append({"lookup_table_type": lookup_type, "name": name, "id": id_val})
+            result_df = pl.DataFrame(rows)
             context.add_output_metadata(
                 {
                     "lookups_loaded": MetadataValue.int(total_loaded),
@@ -723,7 +804,7 @@ def load_lookup_tables_from_csv(
                     "details": MetadataValue.json(all_results),
                 }
             )
-            return all_results
+            return result_df
         else:
             raise ValueError(
                 f"lookup_table_type '{config.lookup_table_type}' not found in CSV columns. "
@@ -733,14 +814,21 @@ def load_lookup_tables_from_csv(
     elif "name" in df.columns:
         # Long format: has lookup_table_type and name columns
         results = process_long_format_lookup(context, lookup_manager, df, config)
+        # Convert dictionary to Polars DataFrame
+        result_df = pl.DataFrame(
+            [
+                {"lookup_table_type": config.lookup_table_type, "name": name, "id": id_val}
+                for name, id_val in results.items()
+            ]
+        )
         context.add_output_metadata(
             {
-                "lookups_loaded": MetadataValue.int(len(results)),
+                "lookups_loaded": MetadataValue.int(len(result_df)),
                 "lookup_table_type": MetadataValue.text(config.lookup_table_type),
                 "details": MetadataValue.json(results),
             }
         )
-        return results
+        return result_df
     else:
         raise CSVValidationError(
             f"CSV file {config.csv_path} must have lookup table columns "
@@ -755,14 +843,16 @@ def load_lookup_tables_from_csv(
         AssetKey("init_database_schema"),  # Schema must be initialized first
         AssetKey("load_lookup_tables_from_csv"),  # Depends on lookup tables being loaded first
     ],
-    io_manager_key="passthrough_io_manager",
+    io_manager_key="polars_parquet_io_manager",
     kinds=["csv", "clickhouse"],
+    owners=["team:mqrm-data-eng"],
+    tags={"m360-mqrm": ""},
 )
 def load_meta_series_from_csv(
     context: AssetExecutionContext,
     config: MetaSeriesCSVConfig,
     clickhouse: ClickHouseResource,
-) -> Dict[str, int]:
+) -> pl.DataFrame:
     """Load meta series from CSV file."""
     context.log.info(f"Loading meta series from {config.csv_path}")
 
@@ -837,11 +927,18 @@ def load_meta_series_from_csv(
             context.log.error(f"Error processing row for {row.get('series_code', 'unknown')}: {e}")
             raise
 
+    # Convert dictionary to Polars DataFrame
+    result_df = pl.DataFrame(
+        [
+            {"series_code": series_code, "series_id": series_id}
+            for series_code, series_id in results.items()
+        ]
+    )
     context.add_output_metadata(
         {
-            "series_loaded": MetadataValue.int(len(results)),
+            "series_loaded": MetadataValue.int(len(result_df)),
             "details": MetadataValue.json(results),
         }
     )
 
-    return results
+    return result_df

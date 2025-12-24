@@ -33,6 +33,8 @@ class IngestionConfig(Config):
     description="Ingest raw time-series data from Bloomberg",
     deps=[AssetKey("load_meta_series_from_csv")],
     kinds=["csv", "clickhouse"],
+    owners=["team:mqrm-data-eng"],
+    tags={"m360-mqrm": ""},
 )
 def ingest_bloomberg_data(
     context: AssetExecutionContext,
@@ -83,6 +85,8 @@ def ingest_bloomberg_data(
     description="Ingest raw time-series data from LSEG",
     deps=[AssetKey("load_meta_series_from_csv")],  # Meta series must exist before ingestion
     kinds=["csv", "clickhouse"],
+    owners=["team:mqrm-data-eng"],
+    tags={"m360-mqrm": ""},
 )
 def ingest_lseg_data(
     context: AssetExecutionContext,
@@ -126,6 +130,8 @@ def ingest_lseg_data(
     description="Ingest raw time-series data from Hawkeye",
     deps=[AssetKey("load_meta_series_from_csv")],  # Meta series must exist before ingestion
     kinds=["csv", "clickhouse"],
+    owners=["team:mqrm-data-eng"],
+    tags={"m360-mqrm": ""},
 )
 def ingest_hawkeye_data(
     context: AssetExecutionContext,
@@ -168,6 +174,8 @@ def ingest_hawkeye_data(
     description="Ingest raw time-series data from Ramp",
     deps=[AssetKey("load_meta_series_from_csv")],  # Meta series must exist before ingestion
     kinds=["csv", "clickhouse"],
+    owners=["team:mqrm-data-eng"],
+    tags={"m360-mqrm": ""},
 )
 def ingest_ramp_data(
     context: AssetExecutionContext,
@@ -210,6 +218,8 @@ def ingest_ramp_data(
     description="Ingest raw time-series data from OneTick",
     deps=[AssetKey("load_meta_series_from_csv")],  # Meta series must exist before ingestion
     kinds=["csv", "clickhouse"],
+    owners=["team:mqrm-data-eng"],
+    tags={"m360-mqrm": ""},
 )
 def ingest_onetick_data(
     context: AssetExecutionContext,
