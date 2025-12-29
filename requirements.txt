@@ -117,7 +117,6 @@ watchdog==5.0.3
 watchfiles==1.1.1
 wcwidth==0.2.14
 websockets==15.0.1
-xbbg==0.9.1
 yarl==1.22.0
 zipp==3.23.0
 zstandard==0.25.0
