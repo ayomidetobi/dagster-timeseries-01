@@ -8,7 +8,7 @@ from dagster_quickstart.utils.datetime_utils import parse_datetime_string
 
 # Daily partition for time-series data ingestion and calculations
 # Start date can be adjusted based on when historical data begins
-DAILY_PARTITION = DailyPartitionsDefinition(start_date="2024-01-01")
+DAILY_PARTITION = DailyPartitionsDefinition(start_date="2025-12-01")
 
 
 def get_partition_date(partition_key: str) -> datetime:

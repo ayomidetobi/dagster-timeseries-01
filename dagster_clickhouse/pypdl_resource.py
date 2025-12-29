@@ -3,7 +3,7 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from dagster import ConfigurableResource, get_dagster_logger
 from decouple import config
@@ -61,6 +61,7 @@ class PyPDLResource(ConfigurableResource):
         series_list: List[Dict[str, Any]],
         start_date: datetime,
         end_date: datetime,
+        max_concurrent: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """Fetch time-series data for multiple series in batch with async execution.
 
@@ -70,6 +71,10 @@ class PyPDLResource(ConfigurableResource):
                 - data_source: The data source path (e.g., "bloomberg/ts/PX_LAST")
             start_date: Start date for data retrieval
             end_date: End date for data retrieval
+            max_concurrent: Optional override for maximum concurrent batches.
+                If None, uses the resource's default max_concurrent value.
+                This parameter allows per-call concurrency control without mutating
+                the shared resource instance (thread-safe).
 
         Returns:
             List of dicts with keys: data_code, data_source, data (list of {timestamp, value})
@@ -84,16 +89,22 @@ class PyPDLResource(ConfigurableResource):
                 "pyeqdr.pypdl is not installed. Please install it with: pip install pyeqdr"
             )
 
+        # Use provided max_concurrent or fall back to resource default
+        # This avoids mutating the shared resource instance (thread-safe)
+        effective_max_concurrent = (
+            max_concurrent if max_concurrent is not None else self.max_concurrent
+        )
+
         # Split series_list into batches for concurrent execution
-        batches = _split_into_batches(series_list, self.max_concurrent)
+        batches = _split_into_batches(series_list, effective_max_concurrent)
         logger.info(
             f"Processing {len(series_list)} series in {len(batches)} batches "
-            f"(max_concurrent={self.max_concurrent})"
+            f"(max_concurrent={effective_max_concurrent})"
         )
 
         # Execute batches concurrently using thread pool for blocking PyPDL calls
         loop = asyncio.get_running_loop()
-        with ThreadPoolExecutor(max_workers=self.max_concurrent) as executor:
+        with ThreadPoolExecutor(max_workers=effective_max_concurrent) as executor:
             tasks = [
                 loop.run_in_executor(
                     executor,
@@ -103,7 +114,7 @@ class PyPDLResource(ConfigurableResource):
                     end_date,
                     batch_idx,
                 )
-                for batch_idx, batch in enumerate(batches)
+                for batch_idx, batch in enumerate[List[Dict[str, Any]]](batches)
             ]
             batch_results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -111,7 +122,7 @@ class PyPDLResource(ConfigurableResource):
         all_results: List[Dict[str, Any]] = []
         errors: List[Exception] = []
 
-        for batch_idx, batch_result in enumerate(batch_results):
+        for batch_idx, batch_result in enumerate[List[Dict[str, Any]] | BaseException](batch_results):
             if isinstance(batch_result, Exception):
                 logger.error(
                     f"Batch {batch_idx} failed: {batch_result}",

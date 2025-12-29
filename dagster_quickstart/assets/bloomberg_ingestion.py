@@ -149,13 +149,15 @@ async def _ingest_bloomberg_data(
 
     context.log.info("Prepared %d series for PyPDL API calls", len(series_list))
 
-    # Override max_concurrent if provided in config
-    if config.max_concurrent and config.max_concurrent != pypdl_resource.max_concurrent:
-        original_max_concurrent = pypdl_resource.max_concurrent
-        pypdl_resource.max_concurrent = config.max_concurrent
+    # Determine max_concurrent to use (config override or resource default)
+    # Pass as parameter instead of mutating resource (thread-safe)
+    max_concurrent_override = (
+        config.max_concurrent if config.max_concurrent else None
+    )
+    if max_concurrent_override:
         context.log.info(
-            f"Using max_concurrent={config.max_concurrent} from config "
-            f"(resource default was {original_max_concurrent})"
+            f"Using max_concurrent={max_concurrent_override} from config "
+            f"(resource default is {pypdl_resource.max_concurrent})"
         )
 
     # Fetch data using PyPDL (async)
@@ -168,6 +170,7 @@ async def _ingest_bloomberg_data(
             series_list=series_list,
             start_date=target_date,
             end_date=target_date,
+            max_concurrent=max_concurrent_override,
         )
         context.log.info(
             "PyPDL fetch completed",
