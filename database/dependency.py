@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from dagster_clickhouse.resources import ClickHouseResource
+from dagster_quickstart.utils.datetime_utils import utc_now_metadata
 from database.models import (
     CalculationLogBase,
     CalculationStatus,
@@ -155,7 +156,7 @@ class CalculationLogManager:
                 "formula": calculation.formula or "",
                 "rows": calculation.rows_processed or 0,
                 "error": calculation.error_message or "",
-                "now": datetime.now(),
+                "now": utc_now_metadata(),
             },
         )
 

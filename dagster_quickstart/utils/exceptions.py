@@ -59,3 +59,21 @@ class RecordNotFoundError(DatabaseError):
     """Raised when a requested record is not found."""
 
     pass
+
+
+class PyPDLError(Exception):
+    """Raised when PyPDL operations fail."""
+
+    pass
+
+
+class PyPDLConnectionError(PyPDLError):
+    """Raised when PyPDL connection fails."""
+
+    pass
+
+
+class PyPDLExecutionError(PyPDLError):
+    """Raised when PyPDL execution fails."""
+
+    pass

@@ -41,11 +41,18 @@ META_SERIES_REQUIRED_COLUMNS = [
     "ticker",
 ]
 
+# Required columns for series dependencies CSV
+SERIES_DEPENDENCIES_REQUIRED_COLUMNS = [
+    "parent_series_code",
+    "child_series_code",
+]
+
 # Default CSV file paths
 DEFAULT_CSV_PATHS = {
     "lookup_tables": "data/lookup_tables.csv",
     "allowed_names": "data/allowed_names.csv",
     "meta_series": "data/meta_series.csv",
+    "series_dependencies": "data/series_dependencies.csv",
 }
 
 # NULL value representation in CSV files
@@ -109,3 +116,17 @@ DEFAULT_WEIGHT_DIVISOR = 1.0  # For equal weight distribution
 # Query constants
 QUERY_LIMIT_DEFAULT = 1000
 QUERY_LIMIT_MAX = 10000
+
+# PyPDL constants
+PYPDL_DEFAULT_HOST = "gnp-histo.europe.echonet"
+PYPDL_DEFAULT_PORT = 12002
+PYPDL_DEFAULT_USERNAME = "jess05 Macro Quant"
+PYPDL_DEFAULT_MAX_CONCURRENT = 3  # Conservative default for concurrent requests
+
+# Retry policy constants
+RETRY_POLICY_MAX_RETRIES_DEFAULT = 3
+RETRY_POLICY_DELAY_DEFAULT = 1.0
+RETRY_POLICY_MAX_RETRIES_INGESTION = 3
+RETRY_POLICY_DELAY_INGESTION = 2.0
+RETRY_POLICY_MAX_RETRIES_CSV_LOADER = 2
+RETRY_POLICY_DELAY_CSV_LOADER = 1.0

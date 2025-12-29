@@ -12,6 +12,11 @@ from dagster import (
 )
 
 from dagster_clickhouse.resources import ClickHouseResource
+from dagster_quickstart.utils.datetime_utils import (
+    ensure_utc,
+    normalize_timestamp_precision,
+    utc_now_metadata,
+)
 from database.models import TimeSeriesBatch, TimeSeriesValue
 
 # Try to import polars, but make it optional
@@ -100,11 +105,27 @@ class ClickHouseIOManager(ConfigurableIOManager):
         if not pd.api.types.is_datetime64_any_dtype(df["timestamp"]):
             df["timestamp"] = pd.to_datetime(df["timestamp"])
 
+        # Normalize timestamps to UTC with DateTime64(6) precision
+        # Convert pandas Timestamp to datetime and normalize
+        def normalize_timestamp(ts: Any) -> datetime:
+            """Normalize a timestamp to UTC with DateTime64(6) precision."""
+            if hasattr(ts, "to_pydatetime"):
+                # pandas Timestamp
+                dt = ts.to_pydatetime()
+            elif isinstance(ts, datetime):
+                dt = ts
+            else:
+                # Fallback: try to convert
+                dt = pd.to_datetime(ts).to_pydatetime()
+            return normalize_timestamp_precision(ensure_utc(dt), 6)
+
+        df["timestamp"] = df["timestamp"].apply(normalize_timestamp)
+
         # Sort by timestamp
         df = df.sort_values("timestamp")
 
         # Add metadata columns
-        now = datetime.now()
+        now = utc_now_metadata()
         df["created_at"] = now
         df["updated_at"] = now
 
@@ -126,13 +147,15 @@ class ClickHouseIOManager(ConfigurableIOManager):
     def _insert_timeseries_batch(self, context: OutputContext, batch: TimeSeriesBatch) -> None:
         """Insert TimeSeriesBatch into ClickHouse."""
         data = []
-        now = datetime.now()
+        now = utc_now_metadata()
 
         for value in batch.values:
+            # Normalize timestamp to UTC with DateTime64(6) precision
+            normalized_timestamp = normalize_timestamp_precision(ensure_utc(value.timestamp), 6)
             data.append(
                 [
                     value.series_id,
-                    value.timestamp,
+                    normalized_timestamp,
                     value.value,
                     now,
                     now,
@@ -160,4 +183,3 @@ def clickhouse_io_manager(context) -> ClickHouseIOManager:
         table_name="valueData",
         batch_size=10000,
     )
-

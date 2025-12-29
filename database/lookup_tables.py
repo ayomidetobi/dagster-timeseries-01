@@ -1,10 +1,10 @@
 """Lookup table management for the financial platform."""
 
-from datetime import datetime
 from typing import Any, Dict, Optional
 
 from dagster_clickhouse.resources import ClickHouseResource
 from dagster_quickstart.utils.constants import DB_COLUMNS, DB_TABLES
+from dagster_quickstart.utils.datetime_utils import utc_now_metadata
 from dagster_quickstart.utils.exceptions import DatabaseError
 from database.models import (
     AssetClassLookup,
@@ -58,7 +58,7 @@ class LookupTableManager:
         """
         table_name = DB_TABLES[lookup_type]
         id_column, name_column = DB_COLUMNS[lookup_type]
-        now = datetime.now()
+        now = utc_now_metadata()
 
         if record_id:
             # Update existing record
@@ -231,6 +231,11 @@ class LookupTableManager:
     def get_ticker_source_by_name(self, name: str) -> Optional[Dict[str, Any]]:
         """Get ticker source by name."""
         return self._get_lookup_by_name("ticker_source", name)
+
+    def get_ticker_source_by_code(self, code: str) -> Optional[Dict[str, Any]]:
+        """Get ticker source by code."""
+        table_name = DB_TABLES["ticker_source"]
+        return get_by_name(self.clickhouse, table_name, "ticker_source_code", code)
 
     # Region methods
     def insert_region(self, region: RegionLookup) -> int:

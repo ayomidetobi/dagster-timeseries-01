@@ -1,5 +1,9 @@
 """Utility modules for Dagster assets."""
 
+from . import datetime_utils
+
+__all__ = ["datetime_utils"]
+
 from dagster_quickstart.utils.constants import (
     CALCULATION_TYPES,
     DB_COLUMNS,

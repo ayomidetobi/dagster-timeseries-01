@@ -17,6 +17,8 @@ from dagster_quickstart.utils.constants import (
     CALCULATION_TYPES,
     DEFAULT_SMA_WINDOW,
     DEFAULT_WEIGHT_DIVISOR,
+    RETRY_POLICY_DELAY_DEFAULT,
+    RETRY_POLICY_MAX_RETRIES_DEFAULT,
 )
 from dagster_quickstart.utils.exceptions import (
     CalculationError,
@@ -45,16 +47,6 @@ class CalculationConfig(Config):
 
 
 @asset(
-    kinds=["source"],
-    owners=["team:mqrm-data-eng"],
-    tags={"m360-mqrm": ""},
-    retry_policy=RetryPolicy(max_retries=2, delay=0.5),
-)
-def customers() -> str:
-    return "https://raw.githubusercontent.com/dbt-labs/jaffle-shop-classic/refs/heads/main/seeds/raw_customers.csv"
-
-
-@asset(
     group_name="calculations",
     description="Calculate a simple moving average derived series",
     deps=[
@@ -69,7 +61,9 @@ def customers() -> str:
     kinds=["pandas", "clickhouse"],
     owners=["team:mqrm-data-eng"],
     tags={"m360-mqrm": ""},
-    retry_policy=RetryPolicy(max_retries=3, delay=1.0),
+    retry_policy=RetryPolicy(
+        max_retries=RETRY_POLICY_MAX_RETRIES_DEFAULT, delay=RETRY_POLICY_DELAY_DEFAULT
+    ),
     partitions_def=DAILY_PARTITION,
 )
 def calculate_sma_series(
@@ -189,7 +183,9 @@ def calculate_sma_series(
     kinds=["pandas", "clickhouse"],
     owners=["team:mqrm-data-eng"],
     tags={"m360-mqrm": ""},
-    retry_policy=RetryPolicy(max_retries=3, delay=1.0),
+    retry_policy=RetryPolicy(
+        max_retries=RETRY_POLICY_MAX_RETRIES_DEFAULT, delay=RETRY_POLICY_DELAY_DEFAULT
+    ),
     partitions_def=DAILY_PARTITION,
 )
 def calculate_weighted_composite(

@@ -1,13 +1,39 @@
-"""Value data management for time-series data."""
+"""Value data management for time-series data.
+
+Idempotency:
+    The insert_batch_value_data method supports idempotent inserts via the
+    delete_before_insert parameter. When enabled, existing data for the partition
+    date is deleted before insertion, ensuring re-running a partition doesn't
+    create duplicates.
+
+    This is essential for backfill-safe assets that may be re-run multiple times.
+
+Example:
+        # Idempotent insert (deletes existing data for partition_date first)
+        manager.insert_batch_value_data(
+            data=value_data,
+            delete_before_insert=True,
+            partition_date=target_date,
+        )
+
+        # Non-idempotent insert (may create duplicates if re-run)
+        manager.insert_batch_value_data(data=value_data)
+"""
 
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from dagster import get_dagster_logger
+
 from dagster_clickhouse.resources import ClickHouseResource
+from dagster_quickstart.utils.datetime_utils import validate_timestamp
+from dagster_quickstart.utils.exceptions import DatabaseInsertError
 
 # Constants
 VALUE_DATA_TABLE = "valueData"
 BATCH_SIZE = 1000
+
+logger = get_dagster_logger()
 
 
 class ValueDataManager:
@@ -23,77 +49,146 @@ class ValueDataManager:
         timestamp: datetime,
         value: float,
     ) -> None:
-        """Insert a single value data record."""
-        now = datetime.now()
-        query = f"""
-        INSERT INTO {VALUE_DATA_TABLE} (
-            series_id, timestamp, value, created_at, updated_at
-        ) VALUES (
-            {{series_id:UInt32}}, {{timestamp:DateTime64(6)}}, {{value:Float64}},
-            {{now:DateTime64(3)}}, {{now:DateTime64(3)}}
-        )
+        """Insert a single value data record.
+
+        Note: created_at and updated_at use database defaults (now64(3)).
+
+        Args:
+            series_id: Series ID
+            timestamp: Timestamp for the value
+            value: Value to insert
         """
-        self.clickhouse.execute_command(
-            query,
-            parameters={
-                "series_id": series_id,
-                "timestamp": timestamp,
-                "value": value,
-                "now": now,
-            },
+        # Use batch insert with single record for consistency
+        self.insert_batch_value_data(
+            [{"series_id": series_id, "timestamp": timestamp, "value": value}]
         )
 
     def insert_batch_value_data(
         self,
         data: List[Dict[str, Any]],
+        delete_before_insert: bool = False,
+        partition_date: Optional[datetime] = None,
     ) -> int:
-        """Insert a batch of value data records.
+        """Insert a batch of value data records using ClickHouse bulk insert.
+
+        Uses ClickHouse client's native insert method for efficient bulk inserts.
+        created_at and updated_at use database defaults (now64(3)).
+
+        For idempotency, set delete_before_insert=True to delete existing data for
+        the partition date before inserting. This ensures re-running a partition
+        doesn't create duplicates.
 
         Args:
             data: List of dicts with keys: series_id, timestamp, value
+            delete_before_insert: If True, delete existing data for the partition date
+                before inserting. Requires partition_date to be set.
+            partition_date: Date for partition-based deletion (required if
+                delete_before_insert=True). Should be UTC timezone-aware datetime.
 
         Returns:
             Number of rows inserted
+
+        Raises:
+            ValueError: If data format is invalid or partition_date is missing when required
+            DatabaseInsertError: If insertion fails
         """
         if not data:
             return 0
 
-        now = datetime.now()
+        # Handle delete-before-insert for idempotency
+        if delete_before_insert:
+            if partition_date is None:
+                raise ValueError(
+                    "partition_date is required when delete_before_insert=True. "
+                    "This ensures idempotent inserts by deleting existing data for the partition."
+                )
+
+            # Validate and normalize partition date
+            normalized_partition_date = validate_timestamp(
+                partition_date, field_name="partition_date"
+            )
+
+            # Get unique series_ids from the data to delete
+            series_ids_to_delete = {int(record["series_id"]) for record in data}
+
+            # Delete data for each series for the partition date (entire day)
+            partition_start = normalized_partition_date.replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+            partition_end = normalized_partition_date.replace(
+                hour=23, minute=59, second=59, microsecond=999999
+            )
+
+            for series_id in series_ids_to_delete:
+                self.delete_partition_data(series_id, partition_start, partition_end)
+                logger.info(
+                    "Deleted existing data before insert for idempotency",
+                    extra={
+                        "series_id": series_id,
+                        "partition_date": normalized_partition_date.date().isoformat(),
+                        "table": VALUE_DATA_TABLE,
+                    },
+                )
+
         rows_inserted = 0
 
-        # Process in batches
-        for i in range(0, len(data), BATCH_SIZE):
-            batch = data[i : i + BATCH_SIZE]
-            values = []
-            params = {"now": now}
+        # Convert to list of lists format for ClickHouse insert
+        # Only include columns that are not using database defaults
+        column_names = ["series_id", "timestamp", "value"]
+        batch_data: List[List[Any]] = []
 
-            for idx, record in enumerate(batch):
-                series_id = record["series_id"]
-                timestamp = record["timestamp"]
-                value = record["value"]
-
-                values.append(
-                    f"({{series_id_{idx}:UInt32}}, {{timestamp_{idx}:DateTime64(6)}}, "
-                    f"{{value_{idx}:Float64}}, {{now:DateTime64(3)}}, {{now:DateTime64(3)}})"
+        for record in data:
+            if not all(key in record for key in column_names):
+                raise ValueError(
+                    f"Record missing required keys. Expected: {column_names}, "
+                    f"Got: {list(record.keys())}"
                 )
-                params[f"series_id_{idx}"] = series_id
-                params[f"timestamp_{idx}"] = timestamp
-                params[f"value_{idx}"] = value
 
-            query = f"""
-            INSERT INTO {VALUE_DATA_TABLE} (
-                series_id, timestamp, value, created_at, updated_at
-            ) VALUES {', '.join(values)}
-            """
+            # Validate and normalize timestamp to UTC with DateTime64(6) precision
+            timestamp = validate_timestamp(record["timestamp"], field_name="timestamp")
 
+            batch_data.append(
+                [
+                    int(record["series_id"]),
+                    timestamp,
+                    float(record["value"]),
+                ]
+            )
+
+        # Process in batches using ClickHouse native insert
+        for i in range(0, len(batch_data), BATCH_SIZE):
+            batch = batch_data[i : i + BATCH_SIZE]
             try:
-                self.clickhouse.execute_command(query, parameters=params)
+                self.clickhouse.insert_data(
+                    table=VALUE_DATA_TABLE,
+                    data=batch,
+                    column_names=column_names,
+                )
                 rows_inserted += len(batch)
+                logger.info(
+                    "Inserted batch of value data",
+                    extra={
+                        "batch_index": i // BATCH_SIZE,
+                        "batch_size": len(batch),
+                        "table": VALUE_DATA_TABLE,
+                    },
+                )
             except Exception as e:
-                # Log error but continue with next batch
-                print(f"Error inserting batch {i}: {e}")
-                raise
+                logger.error(
+                    "Error inserting batch of value data",
+                    extra={
+                        "batch_index": i // BATCH_SIZE,
+                        "batch_size": len(batch),
+                        "table": VALUE_DATA_TABLE,
+                        "error": str(e),
+                    },
+                )
+                raise DatabaseInsertError(f"Failed to insert batch into {VALUE_DATA_TABLE}") from e
 
+        logger.info(
+            "Completed batch insert of value data",
+            extra={"total_rows": rows_inserted, "table": VALUE_DATA_TABLE},
+        )
         return rows_inserted
 
     def get_value_data(
@@ -118,12 +213,16 @@ class ValueDataManager:
         params = {"series_id": series_id}
 
         if start_date:
+            # Validate and normalize start_date to UTC with DateTime64(6) precision
+            normalized_start_date = validate_timestamp(start_date, field_name="start_date")
             query += " AND timestamp >= {start_date:DateTime64(6)}"
-            params["start_date"] = start_date
+            params["start_date"] = normalized_start_date
 
         if end_date:
+            # Validate and normalize end_date to UTC with DateTime64(6) precision
+            normalized_end_date = validate_timestamp(end_date, field_name="end_date")
             query += " AND timestamp <= {end_date:DateTime64(6)}"
-            params["end_date"] = end_date
+            params["end_date"] = normalized_end_date
 
         query += " ORDER BY timestamp DESC LIMIT {limit:UInt32}"
         params["limit"] = limit
@@ -153,3 +252,80 @@ class ValueDataManager:
             return result.result_rows[0][0]
         return None
 
+    def delete_partition_data(
+        self,
+        series_id: int,
+        start_date: datetime,
+        end_date: datetime,
+    ) -> int:
+        """Delete value data for a series within a date range (partition-based deletion).
+
+        This method provides idempotency by allowing deletion of data before re-insertion.
+        Used for partition-based ingestion where we want to ensure no duplicates when
+        re-running a partition.
+
+        Args:
+            series_id: Series ID
+            start_date: Start date (inclusive) - must be UTC timezone-aware
+            end_date: End date (inclusive) - must be UTC timezone-aware
+
+        Returns:
+            Number of rows deleted (approximate - ClickHouse ALTER DELETE doesn't return exact count)
+
+        Raises:
+            ValueError: If dates are invalid or start_date > end_date
+            DatabaseError: If deletion fails
+        """
+        # Validate and normalize timestamps
+        normalized_start = validate_timestamp(start_date, field_name="start_date")
+        normalized_end = validate_timestamp(end_date, field_name="end_date")
+
+        if normalized_start > normalized_end:
+            raise ValueError(
+                f"start_date ({normalized_start}) must be <= end_date ({normalized_end})"
+            )
+
+        query = f"""
+        ALTER TABLE {VALUE_DATA_TABLE}
+        DELETE WHERE series_id = {{series_id:UInt32}}
+          AND timestamp >= {{start_date:DateTime64(6)}}
+          AND timestamp <= {{end_date:DateTime64(6)}}
+        """
+
+        try:
+            self.clickhouse.execute_command(
+                query,
+                parameters={
+                    "series_id": series_id,
+                    "start_date": normalized_start,
+                    "end_date": normalized_end,
+                },
+            )
+            logger.info(
+                "Deleted partition data for series",
+                extra={
+                    "series_id": series_id,
+                    "start_date": normalized_start.isoformat(),
+                    "end_date": normalized_end.isoformat(),
+                    "table": VALUE_DATA_TABLE,
+                },
+            )
+            # ClickHouse ALTER DELETE doesn't return row count, return -1 to indicate unknown
+            return -1
+        except Exception as e:
+            logger.error(
+                "Error deleting partition data",
+                extra={
+                    "series_id": series_id,
+                    "start_date": normalized_start.isoformat(),
+                    "end_date": normalized_end.isoformat(),
+                    "table": VALUE_DATA_TABLE,
+                    "error": str(e),
+                },
+            )
+            from dagster_quickstart.utils.exceptions import DatabaseError
+
+            raise DatabaseError(
+                f"Failed to delete partition data for series_id {series_id} "
+                f"from {normalized_start} to {normalized_end}: {e}"
+            ) from e

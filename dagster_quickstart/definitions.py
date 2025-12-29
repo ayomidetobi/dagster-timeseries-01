@@ -1,7 +1,6 @@
 from dagster import (
     AssetSelection,
     Definitions,
-    EnvVar,
     ScheduleDefinition,
     define_asset_job,
     load_assets_from_modules,
@@ -11,16 +10,16 @@ from dagster_msteams import (
     make_teams_on_run_failure_sensor,
 )
 from dagster_polars import PolarsParquetIOManager
+from decouple import config
 
-# from dagster_clickhouse.bloomberg import BloombergResource
 from dagster_clickhouse.io_manager import clickhouse_io_manager
+
+# from dagster_clickhouse.pypdl_resource import PyPDLResource
 from dagster_clickhouse.resources import ClickHouseResource
-from dagster_quickstart.assets import  calculations, csv_loader, ingestion
+from dagster_quickstart.assets import calculations, csv_loader, ingestion
 from dagster_quickstart.notifications.teams_messages import (
     failure_message_fn,
-    success_message_fn,
 )
-from decouple import config
 
 all_assets = load_assets_from_modules([ingestion, calculations, csv_loader])
 
@@ -29,7 +28,7 @@ all_assets = load_assets_from_modules([ingestion, calculations, csv_loader])
 # The IO manager is a factory function, so we pass it as a reference
 resources = {
     "clickhouse": ClickHouseResource.from_config(),
-    # "bloomberg": BloombergResource(),
+    # "pypdl_resource": PyPDLResource(),
     "io_manager": clickhouse_io_manager,
     "polars_parquet_io_manager": PolarsParquetIOManager(base_dir="data/parquet"),
     "msteams": MSTeamsResource(hook_url=config("TEAMS_WEBHOOK_URL")),

@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from dagster_clickhouse.resources import ClickHouseResource
+from dagster_quickstart.utils.datetime_utils import utc_now_metadata
 
 
 def get_next_id(clickhouse: ClickHouseResource, table_name: str, id_column: str) -> int:
@@ -68,7 +69,7 @@ def execute_update_query(
         now: Optional datetime for updated_at field
     """
     if now is None:
-        now = datetime.now()
+        now = utc_now_metadata()
 
     # Build SET clause
     set_clauses = []
@@ -129,7 +130,7 @@ def execute_insert_query(
         now: Optional datetime for created_at/updated_at fields
     """
     if now is None:
-        now = datetime.now()
+        now = utc_now_metadata()
 
     # Build columns and values (only include non-None fields)
     columns = [id_column]

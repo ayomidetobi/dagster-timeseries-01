@@ -1,6 +1,5 @@
 """CSV-based loading for lookup tables and meta series with validation."""
 
-from datetime import datetime
 from typing import Any, Callable, Dict, Optional, Set
 
 import polars as pl
@@ -19,6 +18,8 @@ from dagster_quickstart.utils.constants import (
     LOOKUP_TABLE_PROCESSING_ORDER,
     META_SERIES_REQUIRED_COLUMNS,
     NULL_VALUE_REPRESENTATION,
+    RETRY_POLICY_DELAY_CSV_LOADER,
+    RETRY_POLICY_MAX_RETRIES_CSV_LOADER,
 )
 from dagster_quickstart.utils.exceptions import (
     CSVValidationError,
@@ -371,17 +372,13 @@ def process_wide_format_lookup(
         name: str, description: Optional[str], tenor_code: Optional[str] = None
     ) -> TenorLookup:
         """Create a TenorLookup object."""
-        return TenorLookup(
-            name=name, description=description, tenor_code=tenor_code or name
-        )
+        return TenorLookup(name=name, description=description, tenor_code=tenor_code or name)
 
     def create_country_lookup(
         name: str, description: Optional[str], country_code: Optional[str] = None
     ) -> CountryLookup:
         """Create a CountryLookup object."""
-        return CountryLookup(
-            name=name, description=description, country_code=country_code or name
-        )
+        return CountryLookup(name=name, description=description, country_code=country_code or name)
 
     # Processor functions for each lookup type
     def process_asset_class(values: list, allowed_names: Set[str]) -> Dict[str, int]:
@@ -722,7 +719,10 @@ def process_long_format_lookup(
             currency_code = row.get("currency_code", name)
             currency_name = row.get("currency_name")
             currency_lookup = CurrencyLookup(
-                name=name, description=description, currency_code=currency_code, currency_name=currency_name
+                name=name,
+                description=description,
+                currency_code=currency_code,
+                currency_name=currency_name,
             )
             lookup_id = lookup_manager.insert_currency(currency_lookup)
             results[name] = lookup_id
@@ -763,7 +763,10 @@ def process_long_format_lookup(
             country_code = row.get("country_code", name)
             country_name = row.get("country_name")
             country_lookup = CountryLookup(
-                name=name, description=description, country_code=country_code, country_name=country_name
+                name=name,
+                description=description,
+                country_code=country_code,
+                country_name=country_name,
             )
             lookup_id = lookup_manager.insert_country(country_lookup)
             results[name] = lookup_id
@@ -937,18 +940,38 @@ def _handle_ticker_source(
     kinds=["clickhouse"],
     owners=["team:mqrm-data-eng"],
     tags={"m360-mqrm": ""},
-    retry_policy=RetryPolicy(max_retries=2, delay=1.0),
+    retry_policy=RetryPolicy(
+        max_retries=RETRY_POLICY_MAX_RETRIES_CSV_LOADER, delay=RETRY_POLICY_DELAY_CSV_LOADER
+    ),
 )
 def init_database_schema(
     context: AssetExecutionContext,
     clickhouse: ClickHouseResource,
 ) -> pl.DataFrame:
-    """Initialize database schema by creating all required tables."""
-    context.log.info("Initializing database schema...")
-    clickhouse.setup_schema()
+    """Initialize database schema using clickhouse-migrate.
+
+    This asset ensures the database exists and runs all pending migrations
+    to set up the database schema.
+    """
+    context.log.info("Initializing database schema using clickhouse-migrate...")
+
+    try:
+        # Ensure database exists
+        clickhouse.ensure_database()
+        context.log.info("Database ensured")
+
+        # Run migrations
+        clickhouse.run_migrations()
+        context.log.info("ClickHouse migrations applied successfully")
+    except Exception as e:
+        context.log.error(f"Error initializing schema with clickhouse-migrate: {e}")
+        raise
+
     context.log.info("Database schema initialized successfully")
     # Return as DataFrame for polars_parquet_io_manager
-    return pl.DataFrame({"status": ["Schema initialized"], "timestamp": [datetime.now()]})
+    from dagster_quickstart.utils.datetime_utils import utc_now
+
+    return pl.DataFrame({"status": ["Schema initialized"], "timestamp": [utc_now()]})
 
 
 @asset(
@@ -959,7 +982,9 @@ def init_database_schema(
     kinds=["csv", "clickhouse"],
     owners=["team:mqrm-data-eng"],
     tags={"m360-mqrm": ""},
-    retry_policy=RetryPolicy(max_retries=2, delay=1.0),
+    retry_policy=RetryPolicy(
+        max_retries=RETRY_POLICY_MAX_RETRIES_CSV_LOADER, delay=RETRY_POLICY_DELAY_CSV_LOADER
+    ),
 )
 def load_lookup_tables_from_csv(
     context: AssetExecutionContext,
@@ -1064,7 +1089,9 @@ def load_lookup_tables_from_csv(
     kinds=["csv", "clickhouse"],
     owners=["team:mqrm-data-eng"],
     tags={"m360-mqrm": ""},
-    retry_policy=RetryPolicy(max_retries=2, delay=1.0),
+    retry_policy=RetryPolicy(
+        max_retries=RETRY_POLICY_MAX_RETRIES_CSV_LOADER, delay=RETRY_POLICY_DELAY_CSV_LOADER
+    ),
 )
 def load_meta_series_from_csv(
     context: AssetExecutionContext,
@@ -1156,6 +1183,12 @@ def load_meta_series_from_csv(
                     context,
                 )
 
+            # Parse is_active (default to True if not provided)
+            is_active = True
+            if row.get("is_active") is not None:
+                is_active_val = str(row.get("is_active")).strip().lower()
+                is_active = is_active_val in ("1", "true", "yes", "y", "active")
+
             meta_series = MetaSeriesCreate(
                 series_name=str(row["series_name"]),
                 series_code=str(row["series_code"]),
@@ -1190,6 +1223,7 @@ def load_meta_series_from_csv(
                 if row.get("calculation_formula")
                 else None,
                 description=str(row["description"]) if row.get("description") else None,
+                is_active=is_active,
             )
 
             # Check if series already exists
@@ -1204,13 +1238,21 @@ def load_meta_series_from_csv(
                 results[meta_series.series_code] = series_id
 
         except (CSVValidationError, DataSourceValidationError, MetaSeriesNotFoundError) as e:
-            context.log.error(f"Validation error processing row for {row.get('series_code', 'unknown')}: {e}")
+            context.log.error(
+                f"Validation error processing row for {row.get('series_code', 'unknown')}: {e}"
+            )
             raise
         except (ValueError, TypeError) as e:
-            context.log.error(f"Data error processing row for {row.get('series_code', 'unknown')}: {e}")
-            raise CSVValidationError(f"Invalid data in row for {row.get('series_code', 'unknown')}: {e}") from e
+            context.log.error(
+                f"Data error processing row for {row.get('series_code', 'unknown')}: {e}"
+            )
+            raise CSVValidationError(
+                f"Invalid data in row for {row.get('series_code', 'unknown')}: {e}"
+            ) from e
         except Exception as e:
-            context.log.error(f"Unexpected error processing row for {row.get('series_code', 'unknown')}: {e}")
+            context.log.error(
+                f"Unexpected error processing row for {row.get('series_code', 'unknown')}: {e}"
+            )
             raise CSVValidationError(f"Unexpected error processing row: {e}") from e
 
     # Convert dictionary to Polars DataFrame

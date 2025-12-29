@@ -14,6 +14,10 @@ from dagster import (
     asset,
 )
 
+from dagster_quickstart.utils.constants import (
+    RETRY_POLICY_DELAY_DEFAULT,
+    RETRY_POLICY_MAX_RETRIES_DEFAULT,
+)
 from dagster_quickstart.utils.exceptions import DatabaseError
 
 
@@ -52,11 +56,11 @@ def _fetch_hackernews_api(url: str, context: AssetExecutionContext) -> Any:
     kinds=["hackernewsapi"],
     owners=["team:mqrm-data-eng"],
     tags={"m360-mqrm": ""},
-    retry_policy=RetryPolicy(max_retries=3, delay=1.0),
+    retry_policy=RetryPolicy(
+        max_retries=RETRY_POLICY_MAX_RETRIES_DEFAULT, delay=RETRY_POLICY_DELAY_DEFAULT
+    ),
 )
-def hackernews_top_story_ids(
-    context: AssetExecutionContext, config: HNStoriesConfig
-) -> None:
+def hackernews_top_story_ids(context: AssetExecutionContext, config: HNStoriesConfig) -> None:
     """Get top stories from the HackerNews top stories endpoint."""
     context.log.info(f"Fetching top {config.top_stories_limit} story IDs from HackerNews")
 
@@ -80,7 +84,9 @@ def hackernews_top_story_ids(
     kinds=["hackernewsapi"],
     owners=["team:mqrm-data-eng"],
     tags={"m360-mqrm": ""},
-    retry_policy=RetryPolicy(max_retries=3, delay=1.0),
+    retry_policy=RetryPolicy(
+        max_retries=RETRY_POLICY_MAX_RETRIES_DEFAULT, delay=RETRY_POLICY_DELAY_DEFAULT
+    ),
 )
 def hackernews_top_stories(
     context: AssetExecutionContext, config: HNStoriesConfig

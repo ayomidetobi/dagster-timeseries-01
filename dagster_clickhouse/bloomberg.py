@@ -13,13 +13,13 @@ logger = get_dagster_logger()
 
 class BloombergResource(ConfigurableResource):
     """Bloomberg API resource using xbbg library.
-    
+
     The xbbg library connects to Bloomberg automatically when you make API calls.
     It supports three connection modes:
     1. Desktop API (Bloomberg Terminal) - default, connects to local Bloomberg Terminal
     2. Server API - requires host and port configuration
     3. Cloud API - requires API key and other credentials
-    
+
     Connection is established automatically on first API call, but you can test
     the connection using the test_connection() method.
     """
@@ -40,7 +40,7 @@ class BloombergResource(ConfigurableResource):
 
     def test_connection(self) -> bool:
         """Test Bloomberg connection by making a simple API call.
-        
+
         Returns:
             True if connection is successful, False otherwise
         """
@@ -67,7 +67,7 @@ class BloombergResource(ConfigurableResource):
 
     def ensure_connection(self) -> None:
         """Ensure Bloomberg connection is established.
-        
+
         This method tests the connection and logs the result.
         The actual connection happens automatically on first API call.
         """
@@ -162,12 +162,12 @@ class BloombergResource(ConfigurableResource):
         end_date: Optional[datetime] = None,
     ) -> Optional[Dict[str, Any]]:
         """Fetch data for a single ticker (blocking call).
-        
+
         **Bloomberg Connection:**
         The connection to Bloomberg is established automatically by xbbg when you
         call blp.bdh() or blp.bdp(). The connection happens HERE in this method
         when blp.bdh() is called for the first time.
-        
+
         Connection modes:
         1. Desktop API (default): Connects to local Bloomberg Terminal
            - Requires Bloomberg Terminal to be running
@@ -205,7 +205,9 @@ class BloombergResource(ConfigurableResource):
                 for date_idx in data.index:
                     # Get the value for this date
                     value = data.loc[date_idx, field] if field in data.columns else None
-                    if value is not None and not (isinstance(value, float) and (value != value)):  # Check for NaN
+                    if value is not None and not (
+                        isinstance(value, float) and (value != value)
+                    ):  # Check for NaN
                         # Convert date index to datetime
                         if isinstance(date_idx, datetime):
                             timestamp = date_idx
@@ -215,7 +217,7 @@ class BloombergResource(ConfigurableResource):
                                 timestamp = datetime.strptime(str(date_idx), "%Y-%m-%d")
                             except:
                                 timestamp = datetime.now()
-                        
+
                         result.append(
                             {
                                 "timestamp": timestamp,
@@ -269,4 +271,3 @@ class BloombergResource(ConfigurableResource):
                 valid_results.append(result)
 
         return valid_results
-

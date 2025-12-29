@@ -1,4 +1,9 @@
-"""ClickHouse table schema definitions for the financial platform."""
+"""ClickHouse table schema definitions for the financial platform.
+
+DEPRECATED: This module is kept for reference only.
+Schema changes should now be managed through migrations in the migrations/ directory
+using clickhouse-migrate. See database/README_CLICKHOUSE_MIGRATIONS.md for details.
+"""
 
 from typing import Dict, List
 
@@ -191,19 +196,16 @@ class ClickHouseSchema:
         term_id Nullable(UInt32),
         tenor_id Nullable(UInt32),
         country_id Nullable(UInt32),
-        is_active UInt8 DEFAULT 1,
-        is_latest UInt8 DEFAULT 1,
-        version UInt32 DEFAULT 1,
         calculation_formula Nullable(String),
-        data_quality_score Nullable(Float64),
         description Nullable(String),
+        is_active UInt8 DEFAULT 1,
         created_at DateTime64(3) DEFAULT now64(3),
         updated_at DateTime64(3) DEFAULT now64(3),
         created_by Nullable(String),
         updated_by Nullable(String)
     ) ENGINE = MergeTree
     PRIMARY KEY (series_id)
-    ORDER BY (series_id, is_active, is_latest, version)
+    ORDER BY (series_id)
     """
 
     # Dependency Graph
@@ -251,7 +253,7 @@ class ClickHouseSchema:
     ) ENGINE = MergeTree
     PRIMARY KEY (series_id, timestamp)
     ORDER BY (series_id, timestamp)
-    PARTITION BY toYYYYMM(timestamp)
+    PARTITION BY toYYYYMMDD(timestamp)
     TTL timestamp + INTERVAL 10 YEAR
     """
 
@@ -284,7 +286,6 @@ class ClickHouseSchema:
         return [
             # Indexes for metaSeries
             "CREATE INDEX IF NOT EXISTS idx_meta_series_code ON metaSeries (series_code)",
-            "CREATE INDEX IF NOT EXISTS idx_meta_series_active ON metaSeries (is_active, is_latest)",
             "CREATE INDEX IF NOT EXISTS idx_meta_series_ticker ON metaSeries (ticker, ticker_source_id)",
             # Indexes for dependency graph
             "CREATE INDEX IF NOT EXISTS idx_dep_parent ON seriesDependencyGraph (parent_series_id)",
@@ -307,7 +308,7 @@ class ClickHouseSchema:
     @classmethod
     def get_migrations(cls) -> List[str]:
         """Get migration statements to add new columns to existing tables.
-        
+
         Note: These migrations will fail silently if columns already exist,
         which is handled by the try-except in setup_schema.
         """

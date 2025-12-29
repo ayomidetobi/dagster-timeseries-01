@@ -1,6 +1,5 @@
-"""Async Bloomberg data ingestion using xbbg."""
+"""Bloomberg data ingestion using pyeqdr.pypdl."""
 
-import asyncio
 from datetime import datetime
 from typing import Any, Dict
 
@@ -14,9 +13,14 @@ from dagster import (
     asset,
 )
 
-from dagster_clickhouse.bloomberg import BloombergResource
+from dagster_clickhouse.pypdl_resource import PyPDLResource
 from dagster_clickhouse.resources import ClickHouseResource
-from dagster_quickstart.utils.exceptions import DatabaseError
+from dagster_quickstart.utils.constants import (
+    RETRY_POLICY_DELAY_INGESTION,
+    RETRY_POLICY_MAX_RETRIES_INGESTION,
+)
+from dagster_quickstart.utils.datetime_utils import parse_timestamp, validate_timestamp
+from dagster_quickstart.utils.exceptions import DatabaseError, PyPDLError
 from dagster_quickstart.utils.partitions import DAILY_PARTITION, get_partition_date
 from database.lookup_tables import LookupTableManager
 from database.meta_series import MetaSeriesManager
@@ -26,23 +30,23 @@ from database.value_data import ValueDataManager
 class BloombergIngestionConfig(Config):
     """Configuration for Bloomberg data ingestion."""
 
-    max_concurrent: int = 10  # Maximum concurrent Bloomberg API calls
-    force_refresh: bool = False  # Force refresh even if data exists for the date
+    force_refresh: bool = False  # If True, delete existing data for the partition date before inserting (ensures idempotency when re-running a partition). If False, skip insertion if data already exists for the date.
+    max_concurrent: int = 3  # Maximum concurrent PyPDL requests (overrides resource default if set)
 
 
-async def _ingest_bloomberg_data_async(
+async def _ingest_bloomberg_data(
     context: AssetExecutionContext,
     config: BloombergIngestionConfig,
-    bloomberg: BloombergResource,
+    pypdl_resource: PyPDLResource,
     clickhouse: ClickHouseResource,
     target_date: datetime,
 ) -> pl.DataFrame:
-    """Internal async function for Bloomberg data ingestion.
+    """Internal function for Bloomberg data ingestion using PyPDL.
 
     Args:
         context: Dagster execution context
         config: Bloomberg ingestion configuration
-        bloomberg: Bloomberg resource
+        pypdl_resource: PyPDL resource
         clickhouse: ClickHouse resource
         target_date: Target date for data ingestion (from partition)
 
@@ -53,36 +57,16 @@ async def _ingest_bloomberg_data_async(
         "Starting Bloomberg data ingestion for all active series for date %s", target_date.date()
     )
 
-    # Test Bloomberg connection before proceeding
-    context.log.info("Testing Bloomberg connection...")
-    try:
-        bloomberg.test_connection()
-        context.log.info("Bloomberg connection successful")
-    except (ConnectionError, TimeoutError, OSError) as e:
-        context.log.error(f"Bloomberg connection failed: {e}")
-        context.log.error(
-            "Please ensure Bloomberg Terminal is running (Desktop API) "
-            "or Bloomberg Server API is accessible (Server API)"
-        )
-        raise DatabaseError(
-            f"Bloomberg connection failed: {e}. "
-            "Ensure Bloomberg Terminal is running or Server API is accessible."
-        ) from e
-    except Exception as e:
-        context.log.error(f"Unexpected error testing Bloomberg connection: {e}")
-        raise DatabaseError(f"Unexpected error testing Bloomberg connection: {e}") from e
-
     # Initialize managers
     meta_manager = MetaSeriesManager(clickhouse)
     lookup_manager = LookupTableManager(clickhouse)
     value_manager = ValueDataManager(clickhouse)
 
-    # Get all active metaSeries with Bloomberg ticker source
+    # Get all active metaSeries
     active_series = meta_manager.get_active_series(limit=10000)
     context.log.info(f"Found {len(active_series)} active series")
 
-    # Filter for Bloomberg ticker source (ticker_source_id = 1 typically)
-    # We'll check by ticker_source_name or assume Bloomberg is ID 1
+    # Filter for Bloomberg ticker source
     bloomberg_ticker_source = lookup_manager.get_ticker_source_by_name("Bloomberg")
     bloomberg_ticker_source_id = (
         bloomberg_ticker_source.get("ticker_source_id") if bloomberg_ticker_source else None
@@ -100,7 +84,6 @@ async def _ingest_bloomberg_data_async(
         ticker_source_id = series.get("ticker_source_id")
         if not ticker_source_id:
             return False
-        # Check if ticker_source_id matches Bloomberg lookup or is 1 (common default)
         return (
             ticker_source_id == bloomberg_ticker_source_id
             or ticker_source_id == 1
@@ -115,9 +98,9 @@ async def _ingest_bloomberg_data_async(
         context.log.warning("No Bloomberg series found to ingest")
         return pl.DataFrame({"series_id": [], "rows_ingested": [], "status": []})
 
-    # Prepare series list for async fetching
+    # Prepare series list for PyPDL fetching
     series_list = []
-    series_mapping = {}  # Map (ticker, field) to series_id
+    series_mapping = {}  # Map (data_code, data_source) to series_id
 
     for series in bloomberg_series:
         series_id = series["series_id"]
@@ -133,12 +116,12 @@ async def _ingest_bloomberg_data_async(
             continue
 
         # Get field type code from lookup by ID
-        query = f"SELECT * FROM fieldTypeLookup WHERE field_type_id = {{id:UInt32}} LIMIT 1"
+        query = "SELECT * FROM fieldTypeLookup WHERE field_type_id = {id:UInt32} LIMIT 1"
         result = clickhouse.execute_query(query, parameters={"id": field_type_id})
         field_type = None
         if hasattr(result, "result_rows") and result.result_rows:
             columns = result.column_names
-            field_type = dict(zip(columns, result.result_rows[0]))
+            field_type = dict[Any, Any](zip[tuple[Any, Any]](columns, result.result_rows[0]))
 
         if not field_type:
             context.log.warning(f"Could not find field_type for series {series_id}, skipping")
@@ -149,24 +132,53 @@ async def _ingest_bloomberg_data_async(
             context.log.warning(f"Field type {field_type_id} has no field_type_code, skipping")
             continue
 
-        series_list.append({"ticker": ticker, "field": field_code})
-        series_mapping[(ticker, field_code)] = {
+        # PyPDL data_source format: "bloomberg/ts/{field_type_code}"
+        data_source = f"bloomberg/ts/{field_code}"
+        data_code = ticker
+
+        series_list.append(
+            {
+                "data_code": data_code,
+                "data_source": data_source,
+            }
+        )
+        series_mapping[(data_code, data_source)] = {
             "series_id": series_id,
             "series_code": series.get("series_code"),
         }
 
-    context.log.info("Prepared %d series for Bloomberg API calls", len(series_list))
+    context.log.info("Prepared %d series for PyPDL API calls", len(series_list))
 
-    # Fetch data asynchronously
-    context.log.info("Fetching data from Bloomberg API (async)...")
-    results = await bloomberg.fetch_multiple_series(
-        series_list=series_list,
-        start_date=target_date,
-        end_date=target_date,
-        max_concurrent=config.max_concurrent,
+    # Override max_concurrent if provided in config
+    if config.max_concurrent and config.max_concurrent != pypdl_resource.max_concurrent:
+        original_max_concurrent = pypdl_resource.max_concurrent
+        pypdl_resource.max_concurrent = config.max_concurrent
+        context.log.info(
+            f"Using max_concurrent={config.max_concurrent} from config "
+            f"(resource default was {original_max_concurrent})"
+        )
+
+    # Fetch data using PyPDL (async)
+    context.log.info(
+        "Fetching data from Bloomberg via PyPDL",
+        extra={"series_count": len(series_list), "target_date": target_date.isoformat()},
     )
-
-    context.log.info(f"Received {len(results)} successful responses from Bloomberg")
+    try:
+        results = await pypdl_resource.fetch_time_series_batch(
+            series_list=series_list,
+            start_date=target_date,
+            end_date=target_date,
+        )
+        context.log.info(
+            "PyPDL fetch completed",
+            extra={"successful_responses": len(results)},
+        )
+    except PyPDLError as e:
+        context.log.error(
+            "PyPDL fetch failed",
+            extra={"error": str(e), "series_count": len(series_list)},
+        )
+        raise DatabaseError(f"PyPDL fetch failed: {e}") from e
 
     # Process results and save to ClickHouse
     total_rows_inserted = 0
@@ -177,18 +189,20 @@ async def _ingest_bloomberg_data_async(
         if not result or "data" not in result:
             continue
 
-        ticker = result.get("ticker")
-        field = result.get("field")
+        data_code = result.get("data_code")
+        data_source = result.get("data_source")
         data_points = result.get("data", [])
 
         if not data_points:
-            context.log.warning(f"No data points for {ticker} {field}")
-            failed_series.append({"ticker": ticker, "field": field, "reason": "No data"})
+            context.log.warning(f"No data points for {data_code} ({data_source})")
+            failed_series.append(
+                {"data_code": data_code, "data_source": data_source, "reason": "No data"}
+            )
             continue
 
-        series_info = series_mapping.get((ticker, field))
+        series_info = series_mapping.get((data_code, data_source))
         if not series_info:
-            context.log.warning(f"No series mapping for {ticker} {field}")
+            context.log.warning(f"No series mapping for {data_code} ({data_source})")
             continue
 
         series_id = series_info["series_id"]
@@ -199,7 +213,13 @@ async def _ingest_bloomberg_data_async(
             latest_timestamp = value_manager.get_latest_timestamp(series_id)
             if latest_timestamp and latest_timestamp.date() >= target_date.date():
                 context.log.info(
-                    f"Data already exists for {series_code} on {target_date.date()}, skipping"
+                    "Data already exists, skipping",
+                    extra={
+                        "series_id": series_id,
+                        "series_code": series_code,
+                        "target_date": target_date.date().isoformat(),
+                        "latest_timestamp": latest_timestamp.date().isoformat(),
+                    },
                 )
                 continue
 
@@ -210,23 +230,53 @@ async def _ingest_bloomberg_data_async(
             value = point.get("value")
 
             if timestamp and value is not None:
-                # Ensure timestamp is datetime
-                if isinstance(timestamp, str):
-                    timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-                elif not isinstance(timestamp, datetime):
+                # Parse and validate timestamp to UTC with DateTime64(6) precision
+                parsed_timestamp = parse_timestamp(timestamp)
+                if parsed_timestamp is None:
+                    context.log.warning(
+                        "Could not parse timestamp",
+                        extra={
+                            "series_id": series_id,
+                            "series_code": series_code,
+                            "timestamp": str(timestamp),
+                        },
+                    )
+                    continue
+
+                # Validate and normalize timestamp
+                try:
+                    validated_timestamp = validate_timestamp(
+                        parsed_timestamp, field_name="timestamp"
+                    )
+                except ValueError as e:
+                    context.log.warning(
+                        "Invalid timestamp",
+                        extra={
+                            "series_id": series_id,
+                            "series_code": series_code,
+                            "timestamp": str(timestamp),
+                            "error": str(e),
+                        },
+                    )
                     continue
 
                 value_data.append(
                     {
                         "series_id": series_id,
-                        "timestamp": timestamp,
+                        "timestamp": validated_timestamp,
                         "value": float(value),
                     }
                 )
 
         if value_data:
             try:
-                rows_inserted = value_manager.insert_batch_value_data(value_data)
+                # Use delete_before_insert when force_refresh=True for idempotency
+                # This ensures re-running a partition doesn't create duplicates
+                rows_inserted = value_manager.insert_batch_value_data(
+                    value_data,
+                    delete_before_insert=config.force_refresh,
+                    partition_date=target_date,
+                )
                 total_rows_inserted += rows_inserted
                 successful_series.append(
                     {
@@ -241,12 +291,16 @@ async def _ingest_bloomberg_data_async(
             except (DatabaseError, ValueError, TypeError) as e:
                 context.log.error(f"Error inserting data for {series_code}: {e}")
                 failed_series.append(
-                    {"ticker": ticker, "field": field, "reason": str(e)}
+                    {"data_code": data_code, "data_source": data_source, "reason": str(e)}
                 )
             except Exception as e:
                 context.log.error(f"Unexpected error inserting data for {series_code}: {e}")
                 failed_series.append(
-                    {"ticker": ticker, "field": field, "reason": f"Unexpected error: {e}"}
+                    {
+                        "data_code": data_code,
+                        "data_source": data_source,
+                        "reason": f"Unexpected error: {e}",
+                    }
                 )
 
     # Create summary DataFrame
@@ -265,9 +319,7 @@ async def _ingest_bloomberg_data_async(
             "failed_ingestions": MetadataValue.int(len(failed_series)),
             "total_rows_inserted": MetadataValue.int(total_rows_inserted),
             "target_date": MetadataValue.text(target_date.isoformat()),
-            "successful_series": MetadataValue.json(
-                [s["series_code"] for s in successful_series]
-            ),
+            "successful_series": MetadataValue.json([s["series_code"] for s in successful_series]),
         }
     )
 
@@ -281,35 +333,39 @@ async def _ingest_bloomberg_data_async(
 
 @asset(
     group_name="ingestion",
-    description="Ingest Bloomberg data for all active metaSeries using xbbg with async operations",
+    description="Ingest Bloomberg data for all active metaSeries using pyeqdr.pypdl",
     deps=[AssetKey("load_meta_series_from_csv")],
     kinds=["clickhouse"],
     owners=["team:mqrm-data-eng"],
-    tags={"m360-mqrm": "", "bloomberg": "", "async": ""},
-    retry_policy=RetryPolicy(max_retries=3, delay=2.0),
+    tags={"m360-mqrm": "", "bloomberg": "", "pypdl": ""},
+    retry_policy=RetryPolicy(
+        max_retries=RETRY_POLICY_MAX_RETRIES_INGESTION, delay=RETRY_POLICY_DELAY_INGESTION
+    ),
     partitions_def=DAILY_PARTITION,
 )
-def ingest_bloomberg_data_async(
+async def ingest_bloomberg_data_async(
     context: AssetExecutionContext,
     config: BloombergIngestionConfig,
-    bloomberg: BloombergResource,
+    pypdl_resource: PyPDLResource,
     clickhouse: ClickHouseResource,
 ) -> pl.DataFrame:
-    """Ingest Bloomberg data for all active metaSeries asynchronously.
+    """Ingest Bloomberg data for all active metaSeries using PyPDL (async).
 
     This asset is partitioned by day for backfill-safety. Each partition processes
     data for a specific date.
 
     This asset:
     1. Fetches all active metaSeries with Bloomberg ticker source
-    2. Gets the Bloomberg field code from field_type lookup
-    3. Fetches data from Bloomberg API asynchronously for the partition date
-    4. Saves data to ClickHouse valueData table
+    2. Gets the field_type_code from field_type lookup
+    3. Constructs data_source as "bloomberg/ts/{field_type_code}"
+    4. Uses ticker as data_code
+    5. Fetches data from Bloomberg via PyPDL asynchronously for the partition date
+    6. Saves data to ClickHouse valueData table
 
     Args:
         context: Dagster execution context (includes partition key)
         config: Bloomberg ingestion configuration
-        bloomberg: Bloomberg resource
+        pypdl_resource: PyPDL resource
         clickhouse: ClickHouse resource
 
     Returns:
@@ -320,8 +376,5 @@ def ingest_bloomberg_data_async(
     target_date = get_partition_date(partition_key)
     context.log.info("Processing partition %s (date: %s)", partition_key, target_date.date())
 
-    # Run async function using asyncio
-    return asyncio.run(
-        _ingest_bloomberg_data_async(context, config, bloomberg, clickhouse, target_date)
-    )
-
+    # Run async ingestion function (Dagster handles the event loop)
+    return await _ingest_bloomberg_data(context, config, pypdl_resource, clickhouse, target_date)

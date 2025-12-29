@@ -44,6 +44,8 @@ class TickerSource(str, Enum):
     LSEG = "LSEG"
     RAMP = "RAMP"
     ONETICK = "ONETICK"
+    MANUAL_ENTRY = "MANUAL_ENTRY"
+    INTERNAL = "INTERNAL"
 
 
 # Lookup Table Models
@@ -138,7 +140,7 @@ class CountryLookup(LookupTableBase):
     """Country lookup model."""
 
     country_id: Optional[int] = None
-    country_code: str = Field(..., min_length=1, max_length=10)
+    country_code: str = Field(..., min_length=1, max_length=50)
     country_name: Optional[str] = Field(None, max_length=100)
 
 
@@ -165,6 +167,7 @@ class MetaSeriesBase(BaseModel):
     country_id: Optional[int] = None
     calculation_formula: Optional[str] = None
     description: Optional[str] = None
+    is_active: bool = True  # Default to active
 
 
 class MetaSeriesCreate(MetaSeriesBase):
@@ -177,10 +180,6 @@ class MetaSeries(MetaSeriesBase):
     """Complete meta series model."""
 
     series_id: int
-    is_active: bool = True
-    is_latest: bool = True
-    version: int = 1
-    data_quality_score: Optional[float] = Field(None, ge=0.0, le=1.0)
     created_at: datetime
     updated_at: datetime
     created_by: Optional[str] = None

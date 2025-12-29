@@ -8,6 +8,7 @@ import polars as pl
 from dagster import AssetExecutionContext
 
 from dagster_clickhouse.resources import ClickHouseResource
+from dagster_quickstart.utils.datetime_utils import UTC, parse_datetime_string
 from dagster_quickstart.utils.exceptions import (
     CSVValidationError,
     DataSourceValidationError,
@@ -119,8 +120,9 @@ def generate_date_range(start_date: str, end_date: str) -> List[datetime]:
     Returns:
         List of datetime objects
     """
-    start = datetime.fromisoformat(start_date)
-    end = datetime.fromisoformat(end_date)
+    # Parse dates using robust dateutil parser and normalize to UTC
+    start = parse_datetime_string(start_date).replace(hour=0, minute=0, second=0, microsecond=0)
+    end = parse_datetime_string(end_date).replace(hour=0, minute=0, second=0, microsecond=0)
     dates = []
     current = start
     while current <= end:
@@ -213,7 +215,7 @@ def create_calculation_log(
         input_series_ids=input_series_ids,
         parameters=parameters or formula,
         formula=formula,
-        execution_start=datetime.now(),  # Not stored in DB, but required by model
+        execution_start=datetime.now(UTC),  # Not stored in DB, but required by model
         execution_end=None,
     )
     return calc_manager.create_calculation_log(calc_log)
