@@ -117,6 +117,9 @@ DEFAULT_WEIGHT_DIVISOR = 1.0  # For equal weight distribution
 QUERY_LIMIT_DEFAULT = 1000
 QUERY_LIMIT_MAX = 10000
 
+# Batch size constants
+DEFAULT_BATCH_SIZE = 10000  # Default batch size for database insertions
+
 # PyPDL constants
 PYPDL_DEFAULT_HOST = "gnp-histo.europe.echonet"
 PYPDL_DEFAULT_PORT = 12002

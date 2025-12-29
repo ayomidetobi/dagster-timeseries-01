@@ -17,8 +17,8 @@ class ClickHouseSchema:
         asset_class_id UInt32,
         asset_class_name String,
         description Nullable(String),
-        created_at DateTime64(3) DEFAULT now64(3),
-        updated_at DateTime64(3) DEFAULT now64(3)
+        created_at DateTime64(6) DEFAULT now64(6),
+        updated_at DateTime64(6) DEFAULT now64(6)
     ) ENGINE = MergeTree
     PRIMARY KEY (asset_class_id)
     ORDER BY (asset_class_id)
@@ -30,8 +30,8 @@ class ClickHouseSchema:
         product_type_name String,
         is_derived UInt8 DEFAULT 0,
         description Nullable(String),
-        created_at DateTime64(3) DEFAULT now64(3),
-        updated_at DateTime64(3) DEFAULT now64(3)
+        created_at DateTime64(6) DEFAULT now64(6),
+        updated_at DateTime64(6) DEFAULT now64(6)
     ) ENGINE = MergeTree
     PRIMARY KEY (product_type_id)
     ORDER BY (product_type_id)
@@ -43,8 +43,8 @@ class ClickHouseSchema:
         sub_asset_class_name String,
         asset_class_id UInt32,
         description Nullable(String),
-        created_at DateTime64(3) DEFAULT now64(3),
-        updated_at DateTime64(3) DEFAULT now64(3)
+        created_at DateTime64(6) DEFAULT now64(6),
+        updated_at DateTime64(6) DEFAULT now64(6)
     ) ENGINE = MergeTree
     PRIMARY KEY (sub_asset_class_id)
     ORDER BY (sub_asset_class_id, asset_class_id)
@@ -55,8 +55,8 @@ class ClickHouseSchema:
         data_type_id UInt32,
         data_type_name String,
         description Nullable(String),
-        created_at DateTime64(3) DEFAULT now64(3),
-        updated_at DateTime64(3) DEFAULT now64(3)
+        created_at DateTime64(6) DEFAULT now64(6),
+        updated_at DateTime64(6) DEFAULT now64(6)
     ) ENGINE = MergeTree
     PRIMARY KEY (data_type_id)
     ORDER BY (data_type_id)
@@ -67,8 +67,8 @@ class ClickHouseSchema:
         structure_type_id UInt32,
         structure_type_name String,
         description Nullable(String),
-        created_at DateTime64(3) DEFAULT now64(3),
-        updated_at DateTime64(3) DEFAULT now64(3)
+        created_at DateTime64(6) DEFAULT now64(6),
+        updated_at DateTime64(6) DEFAULT now64(6)
     ) ENGINE = MergeTree
     PRIMARY KEY (structure_type_id)
     ORDER BY (structure_type_id)
@@ -79,8 +79,8 @@ class ClickHouseSchema:
         market_segment_id UInt32,
         market_segment_name String,
         description Nullable(String),
-        created_at DateTime64(3) DEFAULT now64(3),
-        updated_at DateTime64(3) DEFAULT now64(3)
+        created_at DateTime64(6) DEFAULT now64(6),
+        updated_at DateTime64(6) DEFAULT now64(6)
     ) ENGINE = MergeTree
     PRIMARY KEY (market_segment_id)
     ORDER BY (market_segment_id)
@@ -92,8 +92,8 @@ class ClickHouseSchema:
         field_type_name String,
         field_type_code String,
         description Nullable(String),
-        created_at DateTime64(3) DEFAULT now64(3),
-        updated_at DateTime64(3) DEFAULT now64(3)
+        created_at DateTime64(6) DEFAULT now64(6),
+        updated_at DateTime64(6) DEFAULT now64(6)
     ) ENGINE = MergeTree
     PRIMARY KEY (field_type_id)
     ORDER BY (field_type_id)
@@ -105,8 +105,8 @@ class ClickHouseSchema:
         ticker_source_name String,
         ticker_source_code String,
         description Nullable(String),
-        created_at DateTime64(3) DEFAULT now64(3),
-        updated_at DateTime64(3) DEFAULT now64(3)
+        created_at DateTime64(6) DEFAULT now64(6),
+        updated_at DateTime64(6) DEFAULT now64(6)
     ) ENGINE = MergeTree
     PRIMARY KEY (ticker_source_id)
     ORDER BY (ticker_source_id)
@@ -117,8 +117,8 @@ class ClickHouseSchema:
         region_id UInt32,
         region_name String,
         description Nullable(String),
-        created_at DateTime64(3) DEFAULT now64(3),
-        updated_at DateTime64(3) DEFAULT now64(3)
+        created_at DateTime64(6) DEFAULT now64(6),
+        updated_at DateTime64(6) DEFAULT now64(6)
     ) ENGINE = MergeTree
     PRIMARY KEY (region_id)
     ORDER BY (region_id)
@@ -130,8 +130,8 @@ class ClickHouseSchema:
         currency_code String,
         currency_name Nullable(String),
         description Nullable(String),
-        created_at DateTime64(3) DEFAULT now64(3),
-        updated_at DateTime64(3) DEFAULT now64(3)
+        created_at DateTime64(6) DEFAULT now64(6),
+        updated_at DateTime64(6) DEFAULT now64(6)
     ) ENGINE = MergeTree
     PRIMARY KEY (currency_id)
     ORDER BY (currency_id)
@@ -142,8 +142,8 @@ class ClickHouseSchema:
         term_id UInt32,
         term_name String,
         description Nullable(String),
-        created_at DateTime64(3) DEFAULT now64(3),
-        updated_at DateTime64(3) DEFAULT now64(3)
+        created_at DateTime64(6) DEFAULT now64(6),
+        updated_at DateTime64(6) DEFAULT now64(6)
     ) ENGINE = MergeTree
     PRIMARY KEY (term_id)
     ORDER BY (term_id)
@@ -155,8 +155,8 @@ class ClickHouseSchema:
         tenor_code String,
         tenor_name Nullable(String),
         description Nullable(String),
-        created_at DateTime64(3) DEFAULT now64(3),
-        updated_at DateTime64(3) DEFAULT now64(3)
+        created_at DateTime64(6) DEFAULT now64(6),
+        updated_at DateTime64(6) DEFAULT now64(6)
     ) ENGINE = MergeTree
     PRIMARY KEY (tenor_id)
     ORDER BY (tenor_id)
@@ -168,8 +168,8 @@ class ClickHouseSchema:
         country_code String,
         country_name Nullable(String),
         description Nullable(String),
-        created_at DateTime64(3) DEFAULT now64(3),
-        updated_at DateTime64(3) DEFAULT now64(3)
+        created_at DateTime64(6) DEFAULT now64(6),
+        updated_at DateTime64(6) DEFAULT now64(6)
     ) ENGINE = MergeTree
     PRIMARY KEY (country_id)
     ORDER BY (country_id)
@@ -199,8 +199,8 @@ class ClickHouseSchema:
         calculation_formula Nullable(String),
         description Nullable(String),
         is_active UInt8 DEFAULT 1,
-        created_at DateTime64(3) DEFAULT now64(3),
-        updated_at DateTime64(3) DEFAULT now64(3),
+        created_at DateTime64(6) DEFAULT now64(6),
+        updated_at DateTime64(6) DEFAULT now64(6),
         created_by Nullable(String),
         updated_by Nullable(String)
     ) ENGINE = MergeTree
@@ -216,8 +216,8 @@ class ClickHouseSchema:
         child_series_id UInt32,
         weight Nullable(Float64) DEFAULT 1.0,
         formula Nullable(String),
-        created_at DateTime64(3) DEFAULT now64(3),
-        updated_at DateTime64(3) DEFAULT now64(3)
+        created_at DateTime64(6) DEFAULT now64(6),
+        updated_at DateTime64(6) DEFAULT now64(6)
     ) ENGINE = MergeTree
     PRIMARY KEY (dependency_id)
     ORDER BY (dependency_id, parent_series_id, child_series_id)
@@ -235,7 +235,7 @@ class ClickHouseSchema:
         formula String,
         rows_processed Nullable(UInt64),
         error_message Nullable(String),
-        created_at DateTime64(3) DEFAULT now64(3)
+        created_at DateTime64(6) DEFAULT now64(6)
     ) ENGINE = MergeTree
     PRIMARY KEY (calculation_id)
     ORDER BY (calculation_id, series_id, created_at)
@@ -248,8 +248,8 @@ class ClickHouseSchema:
         series_id UInt32,
         timestamp DateTime64(6),
         value Float64,
-        created_at DateTime64(3) DEFAULT now64(3),
-        updated_at DateTime64(3) DEFAULT now64(3)
+        created_at DateTime64(6) DEFAULT now64(6),
+        updated_at DateTime64(6) DEFAULT now64(6)
     ) ENGINE = MergeTree
     PRIMARY KEY (series_id, timestamp)
     ORDER BY (series_id, timestamp)

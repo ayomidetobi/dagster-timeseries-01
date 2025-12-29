@@ -12,6 +12,7 @@ from dagster import (
 )
 
 from dagster_clickhouse.resources import ClickHouseResource
+from dagster_quickstart.utils.constants import DEFAULT_BATCH_SIZE
 from dagster_quickstart.utils.datetime_utils import (
     ensure_utc,
     normalize_timestamp_precision,
@@ -34,7 +35,7 @@ class ClickHouseIOManager(ConfigurableIOManager):
 
     clickhouse: ClickHouseResource
     table_name: str = "valueData"
-    batch_size: int = 10000
+    batch_size: int = DEFAULT_BATCH_SIZE
 
     def handle_output(self, context: OutputContext, obj: Any) -> None:
         """Handle output from assets - store data in ClickHouse."""
@@ -53,7 +54,9 @@ class ClickHouseIOManager(ConfigurableIOManager):
         elif isinstance(obj, TimeSeriesBatch):
             self._insert_timeseries_batch(context, obj)
         # Handle list of TimeSeriesValue
-        elif isinstance(obj, list) and all(isinstance(v, TimeSeriesValue) for v in obj):
+        elif isinstance(obj, list) and all(
+            isinstance(value, TimeSeriesValue) for value in obj
+        ):
             batch = TimeSeriesBatch(series_id=obj[0].series_id, values=obj)
             self._insert_timeseries_batch(context, batch)
         else:
@@ -134,8 +137,8 @@ class ClickHouseIOManager(ConfigurableIOManager):
 
         # Batch insert
         with self.clickhouse.get_connection() as client:
-            for i in range(0, len(data), self.batch_size):
-                batch = data[i : i + self.batch_size]
+            for batch_start_idx in range(0, len(data), self.batch_size):
+                batch = data[batch_start_idx : batch_start_idx + self.batch_size]
                 client.insert(
                     self.table_name,
                     batch,
@@ -164,8 +167,8 @@ class ClickHouseIOManager(ConfigurableIOManager):
 
         # Batch insert
         with self.clickhouse.get_connection() as client:
-            for i in range(0, len(data), self.batch_size):
-                batch_data = data[i : i + self.batch_size]
+            for batch_start_idx in range(0, len(data), self.batch_size):
+                batch_data = data[batch_start_idx : batch_start_idx + self.batch_size]
                 client.insert(
                     self.table_name,
                     batch_data,
@@ -181,5 +184,5 @@ def clickhouse_io_manager(context) -> ClickHouseIOManager:
     return ClickHouseIOManager(
         clickhouse=context.resources.clickhouse,
         table_name="valueData",
-        batch_size=10000,
+        batch_size=DEFAULT_BATCH_SIZE,
     )

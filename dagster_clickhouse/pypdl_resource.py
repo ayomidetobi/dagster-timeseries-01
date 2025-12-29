@@ -208,7 +208,10 @@ def _split_into_batches(
         return []
 
     batch_size = max(1, len(series_list) // max_concurrent)
-    return [series_list[i : i + batch_size] for i in range(0, len(series_list), batch_size)]
+    return [
+        series_list[batch_start_idx : batch_start_idx + batch_size]
+        for batch_start_idx in range(0, len(series_list), batch_size)
+    ]
 
 
 def _build_pdl_dict(
@@ -307,11 +310,11 @@ def _process_pypdl_results(
 
     # Build series mapping
     series_mapping = {
-        f"z{batch_idx}_{i}": {
-            "data_code": batch[i]["data_code"],
-            "data_source": batch[i]["data_source"],
+        f"z{batch_idx}_{item_index}": {
+            "data_code": batch[item_index]["data_code"],
+            "data_source": batch[item_index]["data_source"],
         }
-        for i in valid_indices
+        for item_index in valid_indices
     }
 
     # Process successful results
@@ -365,7 +368,7 @@ def _get_valid_indices(
     if not error_index_list:
         return list(range(batch_size))
 
-    error_indices = set(int(i) for i in error_index_list)
+    error_indices = set(int(error_idx) for error_idx in error_index_list)
     result_key = f"z_batch_{batch_idx}"
 
     for error_idx in sorted(error_indices, reverse=True):
@@ -384,7 +387,11 @@ def _get_valid_indices(
                 },
             )
 
-    return [i for i in range(batch_size) if i + 1 not in error_indices]
+    return [
+        item_index
+        for item_index in range(batch_size)
+        if item_index + 1 not in error_indices
+    ]
 
 
 def _convert_to_data_points(

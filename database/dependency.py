@@ -38,7 +38,7 @@ class DependencyManager:
             formula, created_at, updated_at
         ) VALUES (
             {id:UInt64}, {parent:UInt32}, {child:UInt32}, {weight:Float64},
-            {formula:String}, {now:DateTime64(3)}, {now:DateTime64(3)}
+            {formula:String}, {now:DateTime64(6)}, {now:DateTime64(6)}
         )
         """
 
@@ -140,7 +140,7 @@ class CalculationLogManager:
             input_series_ids, parameters, formula, rows_processed, error_message, created_at
         ) VALUES (
             {id:UInt64}, {series_id:UInt32}, {type:String}, {status:String},
-            {inputs:Array(UInt32)}, {params:String}, {formula:String}, {rows:UInt64}, {error:String}, {now:DateTime64(3)}
+            {inputs:Array(UInt32)}, {params:String}, {formula:String}, {rows:UInt64}, {error:String}, {now:DateTime64(6)}
         )
         """
 

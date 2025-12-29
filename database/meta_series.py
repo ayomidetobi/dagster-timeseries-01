@@ -66,7 +66,7 @@ class MetaSeriesManager:
             {asset_id_val}, {sub_asset_id_val}, {product_id_val}, {data_id_val},
             {struct_id_val}, {market_id_val}, {ticker_id_val}, {{ticker:String}},
             {region_id_val}, {currency_id_val}, {term_id_val}, {tenor_id_val}, {country_id_val},
-            {{formula:String}}, {{desc:String}}, {is_active_val}, {{now:DateTime64(3)}}, {{now:DateTime64(3)}}, {{created_by:String}}
+            {{formula:String}}, {{desc:String}}, {is_active_val}, {{now:DateTime64(6)}}, {{now:DateTime64(6)}}, {{created_by:String}}
         )
         """
         params = {

@@ -13,10 +13,9 @@ from typing import Any, Optional
 from dateutil import parser as dateutil_parser
 
 # ClickHouse DateTime64 precision constants
-# timestamp column uses DateTime64(6) - microsecond precision
+# All DateTime64 columns use precision 6 (microseconds)
 TIMESTAMP_PRECISION = 6  # microseconds
-# created_at/updated_at columns use DateTime64(3) - millisecond precision
-METADATA_PRECISION = 3  # milliseconds
+METADATA_PRECISION = 6  # microseconds (standardized to 6)
 
 # UTC timezone
 UTC = timezone.utc
@@ -32,16 +31,14 @@ def utc_now() -> datetime:
 
 
 def utc_now_metadata() -> datetime:
-    """Get current UTC datetime normalized to metadata precision (DateTime64(3)).
+    """Get current UTC datetime normalized to metadata precision (DateTime64(6)).
 
-    This is for created_at/updated_at columns which use DateTime64(3).
+    This is for created_at/updated_at columns which use DateTime64(6).
 
     Returns:
-        Current datetime in UTC timezone (millisecond precision)
+        Current datetime in UTC timezone (microsecond precision)
     """
-    dt = datetime.now(UTC)
-    # Normalize to millisecond precision
-    return dt.replace(microsecond=(dt.microsecond // 1000) * 1000)
+    return datetime.now(UTC)
 
 
 def ensure_utc(dt: datetime) -> datetime:

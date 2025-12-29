@@ -97,7 +97,7 @@ def execute_update_query(
             params[f"field_{field_name}"] = str(value) if value is not None else None
 
     # Add updated_at
-    set_clauses.append("updated_at = {now:DateTime64(3)}")
+    set_clauses.append("updated_at = {now:DateTime64(6)}")
 
     if not set_clauses:
         return  # Nothing to update
@@ -160,7 +160,7 @@ def execute_insert_query(
             params[f"field_{field_name}"] = str(value) if value is not None else None
 
     columns.extend(["created_at", "updated_at"])
-    value_placeholders.extend(["{now:DateTime64(3)}", "{now:DateTime64(3)}"])
+    value_placeholders.extend(["{now:DateTime64(6)}", "{now:DateTime64(6)}"])
 
     query = f"""
     INSERT INTO {table_name} ({', '.join(columns)})

@@ -26,12 +26,12 @@ from typing import Any, Dict, List, Optional
 from dagster import get_dagster_logger
 
 from dagster_clickhouse.resources import ClickHouseResource
+from dagster_quickstart.utils.constants import DEFAULT_BATCH_SIZE
 from dagster_quickstart.utils.datetime_utils import validate_timestamp
 from dagster_quickstart.utils.exceptions import DatabaseInsertError
 
 # Constants
 VALUE_DATA_TABLE = "valueData"
-BATCH_SIZE = 1000
 
 logger = get_dagster_logger()
 
@@ -39,9 +39,15 @@ logger = get_dagster_logger()
 class ValueDataManager:
     """Manager for value data operations."""
 
-    def __init__(self, clickhouse: ClickHouseResource):
-        """Initialize with ClickHouse resource."""
+    def __init__(self, clickhouse: ClickHouseResource, batch_size: int = DEFAULT_BATCH_SIZE):
+        """Initialize with ClickHouse resource.
+
+        Args:
+            clickhouse: ClickHouse resource instance
+            batch_size: Batch size for insertions (default: 10000)
+        """
         self.clickhouse = clickhouse
+        self.batch_size = batch_size
 
     def insert_value_data(
         self,
@@ -51,7 +57,7 @@ class ValueDataManager:
     ) -> None:
         """Insert a single value data record.
 
-        Note: created_at and updated_at use database defaults (now64(3)).
+        Note: created_at and updated_at use database defaults (now64(6)).
 
         Args:
             series_id: Series ID
@@ -72,7 +78,7 @@ class ValueDataManager:
         """Insert a batch of value data records using ClickHouse bulk insert.
 
         Uses ClickHouse client's native insert method for efficient bulk inserts.
-        created_at and updated_at use database defaults (now64(3)).
+        created_at and updated_at use database defaults (now64(6)).
 
         For idempotency, set delete_before_insert=True to delete existing data for
         the partition date before inserting. This ensures re-running a partition
@@ -156,8 +162,8 @@ class ValueDataManager:
             )
 
         # Process in batches using ClickHouse native insert
-        for i in range(0, len(batch_data), BATCH_SIZE):
-            batch = batch_data[i : i + BATCH_SIZE]
+        for batch_start_idx in range(0, len(batch_data), self.batch_size):
+            batch = batch_data[batch_start_idx : batch_start_idx + self.batch_size]
             try:
                 self.clickhouse.insert_data(
                     table=VALUE_DATA_TABLE,
@@ -168,7 +174,7 @@ class ValueDataManager:
                 logger.info(
                     "Inserted batch of value data",
                     extra={
-                        "batch_index": i // BATCH_SIZE,
+                        "batch_index": batch_start_idx // self.batch_size,
                         "batch_size": len(batch),
                         "table": VALUE_DATA_TABLE,
                     },
@@ -177,7 +183,7 @@ class ValueDataManager:
                 logger.error(
                     "Error inserting batch of value data",
                     extra={
-                        "batch_index": i // BATCH_SIZE,
+                        "batch_index": batch_start_idx // self.batch_size,
                         "batch_size": len(batch),
                         "table": VALUE_DATA_TABLE,
                         "error": str(e),
