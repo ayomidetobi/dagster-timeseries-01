@@ -6,15 +6,14 @@ from dagster import (
     AssetKey,
     Config,
     MetadataValue,
+    RetryPolicy,
     asset,
 )
 
 from dagster_clickhouse.resources import ClickHouseResource
 from dagster_quickstart.utils.exceptions import MetaSeriesNotFoundError
-from dagster_quickstart.utils.helpers import (
-    generate_date_range,
-    get_or_validate_meta_series,
-)
+from dagster_quickstart.utils.helpers import get_or_validate_meta_series
+from dagster_quickstart.utils.partitions import DAILY_PARTITION, get_partition_date
 from database.meta_series import MetaSeriesManager
 
 
@@ -24,8 +23,6 @@ class IngestionConfig(Config):
     source: str = "BLOOMBERG"
     ticker: str = "AAPL US Equity"
     series_code: str = "AAPL_PX_LAST"
-    start_date: str = "2024-01-01"
-    end_date: str = "2024-12-31"
 
 
 @asset(
@@ -35,23 +32,43 @@ class IngestionConfig(Config):
     kinds=["csv", "clickhouse"],
     owners=["team:mqrm-data-eng"],
     tags={"m360-mqrm": ""},
+    retry_policy=RetryPolicy(max_retries=3, delay=1.0),
+    partitions_def=DAILY_PARTITION,
 )
 def ingest_bloomberg_data(
     context: AssetExecutionContext,
     config: IngestionConfig,
     clickhouse: ClickHouseResource,
 ) -> pl.DataFrame:
-    """Ingest data from Bloomberg source."""
-    context.log.info(f"Ingesting Bloomberg data for ticker: {config.ticker}")
+    """Ingest data from Bloomberg source.
+
+    This asset is partitioned by day for backfill-safety. Each partition processes
+    data for a specific date.
+
+    Args:
+        context: Dagster execution context (includes partition key)
+        config: Ingestion configuration
+        clickhouse: ClickHouse resource
+
+    Returns:
+        DataFrame with ingested data for the partition date
+    """
+    # Get partition date from context
+    partition_key = context.partition_key
+    target_date = get_partition_date(partition_key)
+    context.log.info(
+        "Ingesting Bloomberg data for ticker: %s, partition: %s (date: %s)",
+        config.ticker,
+        partition_key,
+        target_date.date(),
+    )
 
     # In a real implementation, this would connect to Bloomberg API
-    # For now, we'll simulate with sample data
-    dates = generate_date_range(config.start_date, config.end_date)
-
+    # For now, we'll simulate with sample data for the partition date
     sample_data = pl.DataFrame(
         {
-            "timestamp": dates,
-            "value": [100.0 + i * 0.1 for i in range(len(dates))],
+            "timestamp": [target_date],
+            "value": [100.0],  # Sample value for the date
         }
     )
 
@@ -73,7 +90,7 @@ def ingest_bloomberg_data(
         {
             "rows_ingested": MetadataValue.int(len(sample_data)),
             "series_id": MetadataValue.int(series_id),
-            "date_range": MetadataValue.text(f"{config.start_date} to {config.end_date}"),
+            "partition_date": MetadataValue.text(str(target_date.date())),
         }
     )
 
@@ -87,22 +104,32 @@ def ingest_bloomberg_data(
     kinds=["csv", "clickhouse"],
     owners=["team:mqrm-data-eng"],
     tags={"m360-mqrm": ""},
+    retry_policy=RetryPolicy(max_retries=3, delay=1.0),
+    partitions_def=DAILY_PARTITION,
 )
 def ingest_lseg_data(
     context: AssetExecutionContext,
     config: IngestionConfig,
     clickhouse: ClickHouseResource,
 ) -> pl.DataFrame:
-    """Ingest data from LSEG source."""
-    context.log.info(f"Ingesting LSEG data for ticker: {config.ticker}")
+    """Ingest data from LSEG source.
+
+    This asset is partitioned by day for backfill-safety.
+    """
+    partition_key = context.partition_key
+    target_date = get_partition_date(partition_key)
+    context.log.info(
+        "Ingesting LSEG data for ticker: %s, partition: %s (date: %s)",
+        config.ticker,
+        partition_key,
+        target_date.date(),
+    )
 
     # In a real implementation, this would connect to LSEG API
-    dates = generate_date_range(config.start_date, config.end_date)
-
     sample_data = pl.DataFrame(
         {
-            "timestamp": dates,
-            "value": [200.0 + i * 0.15 for i in range(len(dates))],
+            "timestamp": [target_date],
+            "value": [200.0],  # Sample value for the date
         }
     )
 
@@ -118,7 +145,7 @@ def ingest_lseg_data(
         {
             "rows_ingested": MetadataValue.int(len(sample_data)),
             "series_id": MetadataValue.int(series_id),
-            "date_range": MetadataValue.text(f"{config.start_date} to {config.end_date}"),
+            "partition_date": MetadataValue.text(str(target_date.date())),
         }
     )
 
@@ -132,21 +159,31 @@ def ingest_lseg_data(
     kinds=["csv", "clickhouse"],
     owners=["team:mqrm-data-eng"],
     tags={"m360-mqrm": ""},
+    retry_policy=RetryPolicy(max_retries=3, delay=1.0),
+    partitions_def=DAILY_PARTITION,
 )
 def ingest_hawkeye_data(
     context: AssetExecutionContext,
     config: IngestionConfig,
     clickhouse: ClickHouseResource,
 ) -> pl.DataFrame:
-    """Ingest data from Hawkeye source."""
-    context.log.info(f"Ingesting Hawkeye data for ticker: {config.ticker}")
+    """Ingest data from Hawkeye source.
 
-    dates = generate_date_range(config.start_date, config.end_date)
+    This asset is partitioned by day for backfill-safety.
+    """
+    partition_key = context.partition_key
+    target_date = get_partition_date(partition_key)
+    context.log.info(
+        "Ingesting Hawkeye data for ticker: %s, partition: %s (date: %s)",
+        config.ticker,
+        partition_key,
+        target_date.date(),
+    )
 
     sample_data = pl.DataFrame(
         {
-            "timestamp": dates,
-            "value": [150.0 + i * 0.12 for i in range(len(dates))],
+            "timestamp": [target_date],
+            "value": [150.0],  # Sample value for the date
         }
     )
 
@@ -162,7 +199,7 @@ def ingest_hawkeye_data(
         {
             "rows_ingested": MetadataValue.int(len(sample_data)),
             "series_id": MetadataValue.int(series_id),
-            "date_range": MetadataValue.text(f"{config.start_date} to {config.end_date}"),
+            "partition_date": MetadataValue.text(str(target_date.date())),
         }
     )
 
@@ -176,21 +213,31 @@ def ingest_hawkeye_data(
     kinds=["csv", "clickhouse"],
     owners=["team:mqrm-data-eng"],
     tags={"m360-mqrm": ""},
+    retry_policy=RetryPolicy(max_retries=3, delay=1.0),
+    partitions_def=DAILY_PARTITION,
 )
 def ingest_ramp_data(
     context: AssetExecutionContext,
     config: IngestionConfig,
     clickhouse: ClickHouseResource,
 ) -> pl.DataFrame:
-    """Ingest data from Ramp source."""
-    context.log.info(f"Ingesting Ramp data for ticker: {config.ticker}")
+    """Ingest data from Ramp source.
 
-    dates = generate_date_range(config.start_date, config.end_date)
+    This asset is partitioned by day for backfill-safety.
+    """
+    partition_key = context.partition_key
+    target_date = get_partition_date(partition_key)
+    context.log.info(
+        "Ingesting Ramp data for ticker: %s, partition: %s (date: %s)",
+        config.ticker,
+        partition_key,
+        target_date.date(),
+    )
 
     sample_data = pl.DataFrame(
         {
-            "timestamp": dates,
-            "value": [175.0 + i * 0.13 for i in range(len(dates))],
+            "timestamp": [target_date],
+            "value": [175.0],  # Sample value for the date
         }
     )
 
@@ -206,7 +253,7 @@ def ingest_ramp_data(
         {
             "rows_ingested": MetadataValue.int(len(sample_data)),
             "series_id": MetadataValue.int(series_id),
-            "date_range": MetadataValue.text(f"{config.start_date} to {config.end_date}"),
+            "partition_date": MetadataValue.text(str(target_date.date())),
         }
     )
 
@@ -220,21 +267,31 @@ def ingest_ramp_data(
     kinds=["csv", "clickhouse"],
     owners=["team:mqrm-data-eng"],
     tags={"m360-mqrm": ""},
+    retry_policy=RetryPolicy(max_retries=3, delay=1.0),
+    partitions_def=DAILY_PARTITION,
 )
 def ingest_onetick_data(
     context: AssetExecutionContext,
     config: IngestionConfig,
     clickhouse: ClickHouseResource,
 ) -> pl.DataFrame:
-    """Ingest data from OneTick source."""
-    context.log.info(f"Ingesting OneTick data for ticker: {config.ticker}")
+    """Ingest data from OneTick source.
 
-    dates = generate_date_range(config.start_date, config.end_date)
+    This asset is partitioned by day for backfill-safety.
+    """
+    partition_key = context.partition_key
+    target_date = get_partition_date(partition_key)
+    context.log.info(
+        "Ingesting OneTick data for ticker: %s, partition: %s (date: %s)",
+        config.ticker,
+        partition_key,
+        target_date.date(),
+    )
 
     sample_data = pl.DataFrame(
         {
-            "timestamp": dates,
-            "value": [125.0 + i * 0.11 for i in range(len(dates))],
+            "timestamp": [target_date],
+            "value": [125.0],  # Sample value for the date
         }
     )
 
@@ -250,7 +307,7 @@ def ingest_onetick_data(
         {
             "rows_ingested": MetadataValue.int(len(sample_data)),
             "series_id": MetadataValue.int(series_id),
-            "date_range": MetadataValue.text(f"{config.start_date} to {config.end_date}"),
+            "partition_date": MetadataValue.text(str(target_date.date())),
         }
     )
 

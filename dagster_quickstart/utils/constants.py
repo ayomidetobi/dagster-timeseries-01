@@ -10,6 +10,11 @@ LOOKUP_TABLE_COLUMNS = [
     "market_segment",
     "field_type",
     "ticker_source",
+    "region",
+    "currency",
+    "term",
+    "tenor",
+    "country",
 ]
 
 # Processing order for lookup tables (respects dependencies)
@@ -21,6 +26,11 @@ LOOKUP_TABLE_PROCESSING_ORDER = [
     "market_segment",
     "field_type",
     "ticker_source",
+    "region",
+    "currency",
+    "term",
+    "tenor",
+    "country",
 ]
 
 # Required columns for meta series CSV
@@ -55,6 +65,11 @@ DB_TABLES = {
     "market_segment": "marketSegmentLookup",
     "field_type": "fieldTypeLookup",
     "ticker_source": "tickerSourceLookup",
+    "region": "regionLookup",
+    "currency": "currencyLookup",
+    "term": "termLookup",
+    "tenor": "tenorLookup",
+    "country": "countryLookup",
     "meta_series": "metaSeries",
     "dependency_graph": "seriesDependencyGraph",
     "calculation_log": "calculationLog",
@@ -71,6 +86,11 @@ DB_COLUMNS = {
     "market_segment": ("market_segment_id", "market_segment_name"),
     "field_type": ("field_type_id", "field_type_name"),
     "ticker_source": ("ticker_source_id", "ticker_source_name"),
+    "region": ("region_id", "region_name"),
+    "currency": ("currency_id", "currency_code"),
+    "term": ("term_id", "term_name"),
+    "tenor": ("tenor_id", "tenor_code"),
+    "country": ("country_id", "country_code"),
     "meta_series": ("series_id", "series_code"),
 }
 

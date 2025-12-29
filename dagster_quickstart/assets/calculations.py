@@ -8,6 +8,7 @@ from dagster import (
     AssetKey,
     Config,
     MetadataValue,
+    RetryPolicy,
     asset,
 )
 
@@ -28,6 +29,7 @@ from dagster_quickstart.utils.helpers import (
     update_calculation_log_on_error,
     update_calculation_log_on_success,
 )
+from dagster_quickstart.utils.partitions import DAILY_PARTITION, get_partition_date
 from database.dependency import CalculationLogManager, DependencyManager
 from database.meta_series import MetaSeriesManager
 
@@ -46,6 +48,7 @@ class CalculationConfig(Config):
     kinds=["source"],
     owners=["team:mqrm-data-eng"],
     tags={"m360-mqrm": ""},
+    retry_policy=RetryPolicy(max_retries=2, delay=0.5),
 )
 def customers() -> str:
     return "https://raw.githubusercontent.com/dbt-labs/jaffle-shop-classic/refs/heads/main/seeds/raw_customers.csv"
@@ -66,14 +69,27 @@ def customers() -> str:
     kinds=["pandas", "clickhouse"],
     owners=["team:mqrm-data-eng"],
     tags={"m360-mqrm": ""},
+    retry_policy=RetryPolicy(max_retries=3, delay=1.0),
+    partitions_def=DAILY_PARTITION,
 )
 def calculate_sma_series(
     context: AssetExecutionContext,
     config: CalculationConfig,
     clickhouse: ClickHouseResource,
 ) -> pd.DataFrame:
-    """Calculate a simple moving average derived series."""
-    context.log.info(f"Calculating SMA for series: {config.derived_series_code}")
+    """Calculate a simple moving average derived series.
+
+    This asset is partitioned by day for backfill-safety. Each partition calculates
+    the SMA for data up to and including the partition date.
+    """
+    partition_key = context.partition_key
+    target_date = get_partition_date(partition_key)
+    context.log.info(
+        "Calculating SMA for series: %s, partition: %s (date: %s)",
+        config.derived_series_code,
+        partition_key,
+        target_date.date(),
+    )
 
     meta_manager = MetaSeriesManager(clickhouse)
     dep_manager = DependencyManager(clickhouse)
@@ -105,13 +121,16 @@ def calculate_sma_series(
     )
 
     try:
-        # Load parent series data
+        # Load parent series data up to partition date
         all_data = []
         for dep in parent_deps:
             parent_id = dep["parent_series_id"]
             df = load_series_data_from_clickhouse(clickhouse, parent_id)
             if df is not None:
-                all_data.append(df)
+                # Filter data to partition date
+                df = df[df["timestamp"] <= target_date]
+                if len(df) > 0:
+                    all_data.append(df)
 
         if not all_data:
             raise CalculationError("No parent data found")
@@ -170,14 +189,27 @@ def calculate_sma_series(
     kinds=["pandas", "clickhouse"],
     owners=["team:mqrm-data-eng"],
     tags={"m360-mqrm": ""},
+    retry_policy=RetryPolicy(max_retries=3, delay=1.0),
+    partitions_def=DAILY_PARTITION,
 )
 def calculate_weighted_composite(
     context: AssetExecutionContext,
     config: CalculationConfig,
     clickhouse: ClickHouseResource,
 ) -> pd.DataFrame:
-    """Calculate a weighted composite derived series."""
-    context.log.info(f"Calculating weighted composite: {config.derived_series_code}")
+    """Calculate a weighted composite derived series.
+
+    This asset is partitioned by day for backfill-safety. Each partition calculates
+    the weighted composite for data up to and including the partition date.
+    """
+    partition_key = context.partition_key
+    target_date = get_partition_date(partition_key)
+    context.log.info(
+        "Calculating weighted composite: %s, partition: %s (date: %s)",
+        config.derived_series_code,
+        partition_key,
+        target_date.date(),
+    )
 
     meta_manager = MetaSeriesManager(clickhouse)
     dep_manager = DependencyManager(clickhouse)
@@ -206,7 +238,7 @@ def calculate_weighted_composite(
     )
 
     try:
-        # Load all parent series
+        # Load all parent series up to partition date
         parent_data = {}
         for dep in parent_deps:
             parent_id = dep["parent_series_id"]
@@ -214,7 +246,10 @@ def calculate_weighted_composite(
 
             df = load_series_data_from_clickhouse(clickhouse, parent_id)
             if df is not None:
-                parent_data[parent_id] = {"data": df, "weight": weight}
+                # Filter data to partition date
+                df = df[df["timestamp"] <= target_date]
+                if len(df) > 0:
+                    parent_data[parent_id] = {"data": df, "weight": weight}
 
         if not parent_data:
             raise CalculationError("No parent data found")

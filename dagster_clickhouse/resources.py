@@ -109,6 +109,14 @@ class ClickHouseResource(ConfigurableResource):
                     # Log error but continue
                     logger.warning(f"Could not create index: {e}")
 
+            # Run migrations to add new columns to existing tables
+            for migration_sql in ClickHouseSchema.get_migrations():
+                try:
+                    client.command(migration_sql)
+                except Exception as e:
+                    # Log error but continue (column might already exist)
+                    logger.warning(f"Could not run migration: {e}")
+
 
 def init_clickhouse_resource(context: InitResourceContext) -> ClickHouseResource:
     """Initialize ClickHouse resource from context."""

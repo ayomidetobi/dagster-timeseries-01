@@ -272,3 +272,59 @@ def is_empty_row(row: Dict[str, Any], required_fields: List[str]) -> bool:
         if not value or (isinstance(value, str) and not value.strip()):
             return True
     return False
+
+
+def resolve_lookup_id_from_string(
+    row: Dict[str, Any],
+    id_field: str,
+    string_field: str,
+    lookup_manager: Any,
+    lookup_method: str,
+    context: Optional[AssetExecutionContext] = None,
+) -> Optional[int]:
+    """Resolve lookup ID from either direct ID field or string lookup.
+
+    Args:
+        row: Row dictionary
+        id_field: Name of the ID field (e.g., "region_id")
+        string_field: Name of the string field (e.g., "region")
+        lookup_manager: Lookup table manager instance
+        lookup_method: Method name to call on lookup_manager (e.g., "get_region_by_name")
+        context: Optional Dagster context for logging
+
+    Returns:
+        Resolved lookup ID or None if not found
+    """
+    # Try to get ID directly
+    lookup_id = safe_int(row.get(id_field), id_field, required=False)
+    if lookup_id:
+        return lookup_id
+
+    # Try to resolve from string field
+    string_value = row.get(string_field)
+    if not string_value:
+        return None
+
+    try:
+        lookup_method_func = getattr(lookup_manager, lookup_method)
+        lookup_result = lookup_method_func(str(string_value))
+        if lookup_result:
+            resolved_id = lookup_result.get(id_field)
+            if context:
+                context.log.debug(
+                    f"Resolved {string_field} '{string_value}' to {id_field}={resolved_id}"
+                )
+            return resolved_id
+        else:
+            if context:
+                context.log.warning(
+                    f"{string_field.capitalize()} '{string_value}' not found in lookup table"
+                )
+    except AttributeError as e:
+        if context:
+            context.log.error(f"Lookup method {lookup_method} not found: {e}")
+    except Exception as e:
+        if context:
+            context.log.warning(f"Error resolving {string_field} '{string_value}': {e}")
+
+    return None

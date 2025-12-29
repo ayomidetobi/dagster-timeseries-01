@@ -45,18 +45,25 @@ class MetaSeriesManager:
             "{market_id:UInt32}" if meta_series.market_segment_id is not None else "NULL"
         )
         ticker_id_val = "{ticker_id:UInt32}" if meta_series.ticker_source_id is not None else "NULL"
+        region_id_val = "{region_id:UInt32}" if meta_series.region_id is not None else "NULL"
+        currency_id_val = "{currency_id:UInt32}" if meta_series.currency_id is not None else "NULL"
+        term_id_val = "{term_id:UInt32}" if meta_series.term_id is not None else "NULL"
+        tenor_id_val = "{tenor_id:UInt32}" if meta_series.tenor_id is not None else "NULL"
+        country_id_val = "{country_id:UInt32}" if meta_series.country_id is not None else "NULL"
 
         query = f"""
         INSERT INTO {META_SERIES_TABLE} (
             series_id, series_name, series_code, data_source, field_type_id,
             asset_class_id, sub_asset_class_id, product_type_id, data_type_id,
             structure_type_id, market_segment_id, ticker_source_id, ticker,
+            region_id, currency_id, term_id, tenor_id, country_id,
             is_active, is_latest, version,
             calculation_formula, description, created_at, updated_at, created_by
         ) VALUES (
             {{id:UInt32}}, {{name:String}}, {{code:String}}, {{source:String}}, {field_id_val},
             {asset_id_val}, {sub_asset_id_val}, {product_id_val}, {data_id_val},
             {struct_id_val}, {market_id_val}, {ticker_id_val}, {{ticker:String}},
+            {region_id_val}, {currency_id_val}, {term_id_val}, {tenor_id_val}, {country_id_val},
             {{active:UInt8}}, {{latest:UInt8}}, {{version:UInt32}},
             {{formula:String}}, {{desc:String}}, {{now:DateTime64(3)}}, {{now:DateTime64(3)}}, {{created_by:String}}
         )
@@ -75,6 +82,17 @@ class MetaSeriesManager:
             "now": now,
             "created_by": created_by,
         }
+        # Add optional ID parameters
+        if meta_series.region_id is not None:
+            params["region_id"] = meta_series.region_id
+        if meta_series.currency_id is not None:
+            params["currency_id"] = meta_series.currency_id
+        if meta_series.term_id is not None:
+            params["term_id"] = meta_series.term_id
+        if meta_series.tenor_id is not None:
+            params["tenor_id"] = meta_series.tenor_id
+        if meta_series.country_id is not None:
+            params["country_id"] = meta_series.country_id
         # Only add parameters for non-NULL values
         if meta_series.field_type_id is not None:
             params["field_id"] = meta_series.field_type_id
@@ -205,18 +223,25 @@ class MetaSeriesManager:
             "{market_id:UInt32}" if meta_series.market_segment_id is not None else "NULL"
         )
         ticker_id_val = "{ticker_id:UInt32}" if meta_series.ticker_source_id is not None else "NULL"
+        region_id_val = "{region_id:UInt32}" if meta_series.region_id is not None else "NULL"
+        currency_id_val = "{currency_id:UInt32}" if meta_series.currency_id is not None else "NULL"
+        term_id_val = "{term_id:UInt32}" if meta_series.term_id is not None else "NULL"
+        tenor_id_val = "{tenor_id:UInt32}" if meta_series.tenor_id is not None else "NULL"
+        country_id_val = "{country_id:UInt32}" if meta_series.country_id is not None else "NULL"
 
         query = f"""
         INSERT INTO {META_SERIES_TABLE} (
             series_id, series_name, series_code, data_source, field_type_id,
             asset_class_id, sub_asset_class_id, product_type_id, data_type_id,
             structure_type_id, market_segment_id, ticker_source_id, ticker,
+            region_id, currency_id, term_id, tenor_id, country_id,
             is_active, is_latest, version,
             calculation_formula, description, created_at, updated_at, created_by
         ) VALUES (
             {{id:UInt32}}, {{name:String}}, {{code:String}}, {{source:String}}, {field_id_val},
             {asset_id_val}, {sub_asset_id_val}, {product_id_val}, {data_id_val},
             {struct_id_val}, {market_id_val}, {ticker_id_val}, {{ticker:String}},
+            {region_id_val}, {currency_id_val}, {term_id_val}, {tenor_id_val}, {country_id_val},
             {{active:UInt8}}, {{latest:UInt8}}, {{version:UInt32}},
             {{formula:String}}, {{desc:String}}, {{now:DateTime64(3)}}, {{now:DateTime64(3)}}, {{created_by:String}}
         )
@@ -235,6 +260,17 @@ class MetaSeriesManager:
             "now": now,
             "created_by": created_by,
         }
+        # Add optional ID parameters
+        if meta_series.region_id is not None:
+            params["region_id"] = meta_series.region_id
+        if meta_series.currency_id is not None:
+            params["currency_id"] = meta_series.currency_id
+        if meta_series.term_id is not None:
+            params["term_id"] = meta_series.term_id
+        if meta_series.tenor_id is not None:
+            params["tenor_id"] = meta_series.tenor_id
+        if meta_series.country_id is not None:
+            params["country_id"] = meta_series.country_id
         # Only add parameters for non-NULL values
         if meta_series.field_type_id is not None:
             params["field_id"] = meta_series.field_type_id

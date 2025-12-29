@@ -107,6 +107,69 @@ class ClickHouseSchema:
     ORDER BY (ticker_source_id)
     """
 
+    REGION_LOOKUP = """
+    CREATE TABLE IF NOT EXISTS regionLookup (
+        region_id UInt32,
+        region_name String,
+        description Nullable(String),
+        created_at DateTime64(3) DEFAULT now64(3),
+        updated_at DateTime64(3) DEFAULT now64(3)
+    ) ENGINE = MergeTree
+    PRIMARY KEY (region_id)
+    ORDER BY (region_id)
+    """
+
+    CURRENCY_LOOKUP = """
+    CREATE TABLE IF NOT EXISTS currencyLookup (
+        currency_id UInt32,
+        currency_code String,
+        currency_name Nullable(String),
+        description Nullable(String),
+        created_at DateTime64(3) DEFAULT now64(3),
+        updated_at DateTime64(3) DEFAULT now64(3)
+    ) ENGINE = MergeTree
+    PRIMARY KEY (currency_id)
+    ORDER BY (currency_id)
+    """
+
+    TERM_LOOKUP = """
+    CREATE TABLE IF NOT EXISTS termLookup (
+        term_id UInt32,
+        term_name String,
+        description Nullable(String),
+        created_at DateTime64(3) DEFAULT now64(3),
+        updated_at DateTime64(3) DEFAULT now64(3)
+    ) ENGINE = MergeTree
+    PRIMARY KEY (term_id)
+    ORDER BY (term_id)
+    """
+
+    TENOR_LOOKUP = """
+    CREATE TABLE IF NOT EXISTS tenorLookup (
+        tenor_id UInt32,
+        tenor_code String,
+        tenor_name Nullable(String),
+        description Nullable(String),
+        created_at DateTime64(3) DEFAULT now64(3),
+        updated_at DateTime64(3) DEFAULT now64(3)
+    ) ENGINE = MergeTree
+    PRIMARY KEY (tenor_id)
+    ORDER BY (tenor_id)
+    """
+
+    COUNTRY_LOOKUP = """
+    CREATE TABLE IF NOT EXISTS countryLookup (
+        country_id UInt32,
+        country_code String,
+        country_name Nullable(String),
+        description Nullable(String),
+        created_at DateTime64(3) DEFAULT now64(3),
+        updated_at DateTime64(3) DEFAULT now64(3)
+    ) ENGINE = MergeTree
+    PRIMARY KEY (country_id)
+    ORDER BY (country_id)
+    """
+
     # Meta Series Table
     META_SERIES = """
     CREATE TABLE IF NOT EXISTS metaSeries (
@@ -123,6 +186,11 @@ class ClickHouseSchema:
         market_segment_id Nullable(UInt32),
         ticker_source_id Nullable(UInt32),
         ticker String,
+        region_id Nullable(UInt32),
+        currency_id Nullable(UInt32),
+        term_id Nullable(UInt32),
+        tenor_id Nullable(UInt32),
+        country_id Nullable(UInt32),
         is_active UInt8 DEFAULT 1,
         is_latest UInt8 DEFAULT 1,
         version UInt32 DEFAULT 1,
@@ -199,6 +267,11 @@ class ClickHouseSchema:
             "marketSegmentLookup": cls.MARKET_SEGMENT_LOOKUP,
             "fieldTypeLookup": cls.FIELD_TYPE_LOOKUP,
             "tickerSourceLookup": cls.TICKER_SOURCE_LOOKUP,
+            "regionLookup": cls.REGION_LOOKUP,
+            "currencyLookup": cls.CURRENCY_LOOKUP,
+            "termLookup": cls.TERM_LOOKUP,
+            "tenorLookup": cls.TENOR_LOOKUP,
+            "countryLookup": cls.COUNTRY_LOOKUP,
             "metaSeries": cls.META_SERIES,
             "seriesDependencyGraph": cls.SERIES_DEPENDENCY_GRAPH,
             "calculationLog": cls.CALCULATION_LOG,
@@ -219,4 +292,32 @@ class ClickHouseSchema:
             # Indexes for calculation log
             "CREATE INDEX IF NOT EXISTS idx_calc_series ON calculationLog (series_id, created_at)",
             "CREATE INDEX IF NOT EXISTS idx_calc_status ON calculationLog (status, created_at)",
+            # Indexes for region lookup
+            "CREATE INDEX IF NOT EXISTS idx_region_name ON regionLookup (region_name)",
+            # Indexes for currency lookup
+            "CREATE INDEX IF NOT EXISTS idx_currency_code ON currencyLookup (currency_code)",
+            # Indexes for term lookup
+            "CREATE INDEX IF NOT EXISTS idx_term_name ON termLookup (term_name)",
+            # Indexes for tenor lookup
+            "CREATE INDEX IF NOT EXISTS idx_tenor_code ON tenorLookup (tenor_code)",
+            # Indexes for country lookup
+            "CREATE INDEX IF NOT EXISTS idx_country_code ON countryLookup (country_code)",
+        ]
+
+    @classmethod
+    def get_migrations(cls) -> List[str]:
+        """Get migration statements to add new columns to existing tables.
+        
+        Note: These migrations will fail silently if columns already exist,
+        which is handled by the try-except in setup_schema.
+        """
+        return [
+            # Add new columns to metaSeries table
+            # Note: IF NOT EXISTS may not be supported in all ClickHouse versions
+            # The try-except in setup_schema will handle errors gracefully
+            "ALTER TABLE metaSeries ADD COLUMN region_id Nullable(UInt32) AFTER ticker",
+            "ALTER TABLE metaSeries ADD COLUMN currency_id Nullable(UInt32) AFTER region_id",
+            "ALTER TABLE metaSeries ADD COLUMN term_id Nullable(UInt32) AFTER currency_id",
+            "ALTER TABLE metaSeries ADD COLUMN tenor_id Nullable(UInt32) AFTER term_id",
+            "ALTER TABLE metaSeries ADD COLUMN country_id Nullable(UInt32) AFTER tenor_id",
         ]

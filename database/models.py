@@ -106,6 +106,42 @@ class TickerSourceLookup(LookupTableBase):
     ticker_source_code: str = Field(..., min_length=1, max_length=50)
 
 
+class RegionLookup(LookupTableBase):
+    """Region lookup model."""
+
+    region_id: Optional[int] = None
+
+
+class CurrencyLookup(LookupTableBase):
+    """Currency lookup model."""
+
+    currency_id: Optional[int] = None
+    currency_code: str = Field(..., min_length=1, max_length=24)
+    currency_name: Optional[str] = Field(None, max_length=100)
+
+
+class TermLookup(LookupTableBase):
+    """Term lookup model."""
+
+    term_id: Optional[int] = None
+
+
+class TenorLookup(LookupTableBase):
+    """Tenor lookup model."""
+
+    tenor_id: Optional[int] = None
+    tenor_code: str = Field(..., min_length=1, max_length=20)
+    tenor_name: Optional[str] = Field(None, max_length=100)
+
+
+class CountryLookup(LookupTableBase):
+    """Country lookup model."""
+
+    country_id: Optional[int] = None
+    country_code: str = Field(..., min_length=1, max_length=10)
+    country_name: Optional[str] = Field(None, max_length=100)
+
+
 # Meta Series Models
 class MetaSeriesBase(BaseModel):
     """Base model for meta series."""
@@ -122,6 +158,11 @@ class MetaSeriesBase(BaseModel):
     market_segment_id: Optional[int] = None
     ticker_source_id: Optional[int] = None
     ticker: str = Field(..., min_length=1, max_length=100)
+    region_id: Optional[int] = None
+    currency_id: Optional[int] = None
+    term_id: Optional[int] = None
+    tenor_id: Optional[int] = None
+    country_id: Optional[int] = None
     calculation_formula: Optional[str] = None
     description: Optional[str] = None
 
