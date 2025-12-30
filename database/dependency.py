@@ -3,7 +3,8 @@
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from dagster_clickhouse.resources import ClickHouseResource
+from dagster_quickstart.resources import ClickHouseResource
+from dagster_quickstart.utils.datetime_utils import utc_now_metadata
 from database.models import (
     CalculationLogBase,
     CalculationStatus,
@@ -37,7 +38,7 @@ class DependencyManager:
             formula, created_at, updated_at
         ) VALUES (
             {id:UInt64}, {parent:UInt32}, {child:UInt32}, {weight:Float64},
-            {formula:String}, {now:DateTime64(3)}, {now:DateTime64(3)}
+            {formula:String}, {now:DateTime64(6)}, {now:DateTime64(6)}
         )
         """
 
@@ -139,7 +140,7 @@ class CalculationLogManager:
             input_series_ids, parameters, formula, rows_processed, error_message, created_at
         ) VALUES (
             {id:UInt64}, {series_id:UInt32}, {type:String}, {status:String},
-            {inputs:Array(UInt32)}, {params:String}, {formula:String}, {rows:UInt64}, {error:String}, {now:DateTime64(3)}
+            {inputs:Array(UInt32)}, {params:String}, {formula:String}, {rows:UInt64}, {error:String}, {now:DateTime64(6)}
         )
         """
 
@@ -155,7 +156,7 @@ class CalculationLogManager:
                 "formula": calculation.formula or "",
                 "rows": calculation.rows_processed or 0,
                 "error": calculation.error_message or "",
-                "now": datetime.now(),
+                "now": utc_now_metadata(),
             },
         )
 

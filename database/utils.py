@@ -3,7 +3,8 @@
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from dagster_clickhouse.resources import ClickHouseResource
+from dagster_quickstart.resources import ClickHouseResource
+from dagster_quickstart.utils.datetime_utils import utc_now_metadata
 
 
 def get_next_id(clickhouse: ClickHouseResource, table_name: str, id_column: str) -> int:
@@ -68,7 +69,7 @@ def execute_update_query(
         now: Optional datetime for updated_at field
     """
     if now is None:
-        now = datetime.now()
+        now = utc_now_metadata()
 
     # Build SET clause
     set_clauses = []
@@ -96,7 +97,7 @@ def execute_update_query(
             params[f"field_{field_name}"] = str(value) if value is not None else None
 
     # Add updated_at
-    set_clauses.append("updated_at = {now:DateTime64(3)}")
+    set_clauses.append("updated_at = {now:DateTime64(6)}")
 
     if not set_clauses:
         return  # Nothing to update
@@ -129,7 +130,7 @@ def execute_insert_query(
         now: Optional datetime for created_at/updated_at fields
     """
     if now is None:
-        now = datetime.now()
+        now = utc_now_metadata()
 
     # Build columns and values (only include non-None fields)
     columns = [id_column]
@@ -159,7 +160,7 @@ def execute_insert_query(
             params[f"field_{field_name}"] = str(value) if value is not None else None
 
     columns.extend(["created_at", "updated_at"])
-    value_placeholders.extend(["{now:DateTime64(3)}", "{now:DateTime64(3)}"])
+    value_placeholders.extend(["{now:DateTime64(6)}", "{now:DateTime64(6)}"])
 
     query = f"""
     INSERT INTO {table_name} ({', '.join(columns)})

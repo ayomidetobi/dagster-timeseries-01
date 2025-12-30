@@ -1,7 +1,6 @@
 from dagster import (
     AssetSelection,
     Definitions,
-    EnvVar,
     ScheduleDefinition,
     define_asset_job,
     load_assets_from_modules,
@@ -11,26 +10,37 @@ from dagster_msteams import (
     make_teams_on_run_failure_sensor,
 )
 from dagster_polars import PolarsParquetIOManager
-
-from dagster_clickhouse.io_manager import clickhouse_io_manager
-from dagster_clickhouse.resources import ClickHouseResource
-from dagster_quickstart.assets import calculations, csv_loader, ingestion
-from dagster_quickstart.notifications.teams_messages import (
-    failure_message_fn,
-    success_message_fn,
-)
 from decouple import config
 
-all_assets = load_assets_from_modules([ingestion, calculations, csv_loader])
+from dagster_clickhouse.io_manager import clickhouse_io_manager
+from dagster_quickstart.assets import (
+    calculations,
+    csv_loader,
+    hackernews,
+    ingestion,
+)
+from dagster_quickstart.notifications.email_sensors import (
+    outlook_email_on_run_failure,
+)
+from dagster_quickstart.notifications.teams_messages import (
+    failure_message_fn,
+)
+
+# from dagster_quickstart.resources import PyPDLResource
+from dagster_quickstart.resources import ClickHouseResource, OutlookEmailResource
+
+all_assets = load_assets_from_modules([ingestion, calculations, csv_loader, hackernews])
 
 # Define resources
 # ClickHouseResource is a ConfigurableResource, so we can instantiate it directly
 # The IO manager is a factory function, so we pass it as a reference
 resources = {
     "clickhouse": ClickHouseResource.from_config(),
+    # "pypdl_resource": PyPDLResource(),
     "io_manager": clickhouse_io_manager,
     "polars_parquet_io_manager": PolarsParquetIOManager(base_dir="data/parquet"),
     "msteams": MSTeamsResource(hook_url=config("TEAMS_WEBHOOK_URL")),
+    "outlook_email": OutlookEmailResource.from_config(),
 }
 # Define jobs
 ingestion_job = define_asset_job(
@@ -85,10 +95,21 @@ teams_on_run_failure = make_teams_on_run_failure_sensor(
 #     monitored_jobs=[ingestion_job, metadata_job, calculations_job],
 # )
 
+# Outlook email failure sensor (uses same message format as Teams)
+outlook_email_failure_sensor = outlook_email_on_run_failure
+
+# # Outlook email success sensor (optional - uncomment to enable)
+# outlook_email_success_sensor = outlook_email_on_run_success.configured(
+#     {
+#         "monitored_jobs": [ingestion_job.name, metadata_job.name, calculations_job.name],
+#     },
+#     name="outlook_email_on_run_success",
+# )
+
 defs = Definitions(
     assets=all_assets,
     jobs=[ingestion_job, metadata_job, calculations_job],
     schedules=[ingestion_schedule, calculations_schedule],
-    sensors=[teams_on_run_failure],
+    sensors=[teams_on_run_failure, outlook_email_failure_sensor],
     resources=resources,
 )

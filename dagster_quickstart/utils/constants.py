@@ -10,6 +10,11 @@ LOOKUP_TABLE_COLUMNS = [
     "market_segment",
     "field_type",
     "ticker_source",
+    "region",
+    "currency",
+    "term",
+    "tenor",
+    "country",
 ]
 
 # Processing order for lookup tables (respects dependencies)
@@ -21,6 +26,11 @@ LOOKUP_TABLE_PROCESSING_ORDER = [
     "market_segment",
     "field_type",
     "ticker_source",
+    "region",
+    "currency",
+    "term",
+    "tenor",
+    "country",
 ]
 
 # Required columns for meta series CSV
@@ -31,11 +41,18 @@ META_SERIES_REQUIRED_COLUMNS = [
     "ticker",
 ]
 
+# Required columns for series dependencies CSV
+SERIES_DEPENDENCIES_REQUIRED_COLUMNS = [
+    "parent_series_code",
+    "child_series_code",
+]
+
 # Default CSV file paths
 DEFAULT_CSV_PATHS = {
     "lookup_tables": "data/lookup_tables.csv",
     "allowed_names": "data/allowed_names.csv",
     "meta_series": "data/meta_series.csv",
+    "series_dependencies": "data/series_dependencies.csv",
 }
 
 # NULL value representation in CSV files
@@ -55,6 +72,11 @@ DB_TABLES = {
     "market_segment": "marketSegmentLookup",
     "field_type": "fieldTypeLookup",
     "ticker_source": "tickerSourceLookup",
+    "region": "regionLookup",
+    "currency": "currencyLookup",
+    "term": "termLookup",
+    "tenor": "tenorLookup",
+    "country": "countryLookup",
     "meta_series": "metaSeries",
     "dependency_graph": "seriesDependencyGraph",
     "calculation_log": "calculationLog",
@@ -71,6 +93,11 @@ DB_COLUMNS = {
     "market_segment": ("market_segment_id", "market_segment_name"),
     "field_type": ("field_type_id", "field_type_name"),
     "ticker_source": ("ticker_source_id", "ticker_source_name"),
+    "region": ("region_id", "region_name"),
+    "currency": ("currency_id", "currency_code"),
+    "term": ("term_id", "term_name"),
+    "tenor": ("tenor_id", "tenor_code"),
+    "country": ("country_id", "country_code"),
     "meta_series": ("series_id", "series_code"),
 }
 
@@ -89,3 +116,20 @@ DEFAULT_WEIGHT_DIVISOR = 1.0  # For equal weight distribution
 # Query constants
 QUERY_LIMIT_DEFAULT = 1000
 QUERY_LIMIT_MAX = 10000
+
+# Batch size constants
+DEFAULT_BATCH_SIZE = 10000  # Default batch size for database insertions
+
+# PyPDL constants
+PYPDL_DEFAULT_HOST = "gnp-histo.europe.echonet"
+PYPDL_DEFAULT_PORT = 12002
+PYPDL_DEFAULT_USERNAME = "jess05 Macro Quant"
+PYPDL_DEFAULT_MAX_CONCURRENT = 3  # Conservative default for concurrent requests
+
+# Retry policy constants
+RETRY_POLICY_MAX_RETRIES_DEFAULT = 3
+RETRY_POLICY_DELAY_DEFAULT = 1.0
+RETRY_POLICY_MAX_RETRIES_INGESTION = 3
+RETRY_POLICY_DELAY_INGESTION = 2.0
+RETRY_POLICY_MAX_RETRIES_CSV_LOADER = 2
+RETRY_POLICY_DELAY_CSV_LOADER = 1.0

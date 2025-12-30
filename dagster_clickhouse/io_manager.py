@@ -11,7 +11,13 @@ from dagster import (
     io_manager,
 )
 
-from dagster_clickhouse.resources import ClickHouseResource
+from dagster_quickstart.resources import ClickHouseResource
+from dagster_quickstart.utils.constants import DEFAULT_BATCH_SIZE
+from dagster_quickstart.utils.datetime_utils import (
+    ensure_utc,
+    normalize_timestamp_precision,
+    utc_now_metadata,
+)
 from database.models import TimeSeriesBatch, TimeSeriesValue
 
 # Try to import polars, but make it optional
@@ -29,7 +35,7 @@ class ClickHouseIOManager(ConfigurableIOManager):
 
     clickhouse: ClickHouseResource
     table_name: str = "valueData"
-    batch_size: int = 10000
+    batch_size: int = DEFAULT_BATCH_SIZE
 
     def handle_output(self, context: OutputContext, obj: Any) -> None:
         """Handle output from assets - store data in ClickHouse."""
@@ -48,7 +54,7 @@ class ClickHouseIOManager(ConfigurableIOManager):
         elif isinstance(obj, TimeSeriesBatch):
             self._insert_timeseries_batch(context, obj)
         # Handle list of TimeSeriesValue
-        elif isinstance(obj, list) and all(isinstance(v, TimeSeriesValue) for v in obj):
+        elif isinstance(obj, list) and all(isinstance(value, TimeSeriesValue) for value in obj):
             batch = TimeSeriesBatch(series_id=obj[0].series_id, values=obj)
             self._insert_timeseries_batch(context, batch)
         else:
@@ -100,11 +106,27 @@ class ClickHouseIOManager(ConfigurableIOManager):
         if not pd.api.types.is_datetime64_any_dtype(df["timestamp"]):
             df["timestamp"] = pd.to_datetime(df["timestamp"])
 
+        # Normalize timestamps to UTC with DateTime64(6) precision
+        # Convert pandas Timestamp to datetime and normalize
+        def normalize_timestamp(ts: Any) -> datetime:
+            """Normalize a timestamp to UTC with DateTime64(6) precision."""
+            if hasattr(ts, "to_pydatetime"):
+                # pandas Timestamp
+                dt = ts.to_pydatetime()
+            elif isinstance(ts, datetime):
+                dt = ts
+            else:
+                # Fallback: try to convert
+                dt = pd.to_datetime(ts).to_pydatetime()
+            return normalize_timestamp_precision(ensure_utc(dt), 6)
+
+        df["timestamp"] = df["timestamp"].apply(normalize_timestamp)
+
         # Sort by timestamp
         df = df.sort_values("timestamp")
 
         # Add metadata columns
-        now = datetime.now()
+        now = utc_now_metadata()
         df["created_at"] = now
         df["updated_at"] = now
 
@@ -113,8 +135,8 @@ class ClickHouseIOManager(ConfigurableIOManager):
 
         # Batch insert
         with self.clickhouse.get_connection() as client:
-            for i in range(0, len(data), self.batch_size):
-                batch = data[i : i + self.batch_size]
+            for batch_start_idx in range(0, len(data), self.batch_size):
+                batch = data[batch_start_idx : batch_start_idx + self.batch_size]
                 client.insert(
                     self.table_name,
                     batch,
@@ -126,13 +148,15 @@ class ClickHouseIOManager(ConfigurableIOManager):
     def _insert_timeseries_batch(self, context: OutputContext, batch: TimeSeriesBatch) -> None:
         """Insert TimeSeriesBatch into ClickHouse."""
         data = []
-        now = datetime.now()
+        now = utc_now_metadata()
 
         for value in batch.values:
+            # Normalize timestamp to UTC with DateTime64(6) precision
+            normalized_timestamp = normalize_timestamp_precision(ensure_utc(value.timestamp), 6)
             data.append(
                 [
                     value.series_id,
-                    value.timestamp,
+                    normalized_timestamp,
                     value.value,
                     now,
                     now,
@@ -141,8 +165,8 @@ class ClickHouseIOManager(ConfigurableIOManager):
 
         # Batch insert
         with self.clickhouse.get_connection() as client:
-            for i in range(0, len(data), self.batch_size):
-                batch_data = data[i : i + self.batch_size]
+            for batch_start_idx in range(0, len(data), self.batch_size):
+                batch_data = data[batch_start_idx : batch_start_idx + self.batch_size]
                 client.insert(
                     self.table_name,
                     batch_data,
@@ -158,6 +182,5 @@ def clickhouse_io_manager(context) -> ClickHouseIOManager:
     return ClickHouseIOManager(
         clickhouse=context.resources.clickhouse,
         table_name="valueData",
-        batch_size=10000,
+        batch_size=DEFAULT_BATCH_SIZE,
     )
-

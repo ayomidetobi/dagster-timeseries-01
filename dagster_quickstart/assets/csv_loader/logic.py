@@ -1,29 +1,26 @@
-"""CSV-based loading for lookup tables and meta series with validation."""
+"""CSV loading logic for lookup tables and meta series with validation."""
 
-from datetime import datetime
 from typing import Any, Callable, Dict, Optional, Set
 
 import polars as pl
-from dagster import (
-    AssetExecutionContext,
-    AssetKey,
-    Config,
-    MetadataValue,
-    asset,
-)
+from dagster import AssetExecutionContext
 
-from dagster_clickhouse.resources import ClickHouseResource
+from dagster_quickstart.resources import ClickHouseResource
 from dagster_quickstart.utils.constants import (
-    LOOKUP_TABLE_COLUMNS,
     LOOKUP_TABLE_PROCESSING_ORDER,
     META_SERIES_REQUIRED_COLUMNS,
     NULL_VALUE_REPRESENTATION,
 )
-from dagster_quickstart.utils.exceptions import CSVValidationError
+from dagster_quickstart.utils.exceptions import (
+    CSVValidationError,
+    DataSourceValidationError,
+    MetaSeriesNotFoundError,
+)
 from dagster_quickstart.utils.helpers import (
     is_empty_row,
     parse_data_source,
     read_csv_safe,
+    resolve_lookup_id_from_string,
     safe_int,
     validate_csv_columns,
 )
@@ -31,29 +28,22 @@ from database.lookup_tables import LookupTableManager
 from database.meta_series import MetaSeriesManager
 from database.models import (
     AssetClassLookup,
+    CountryLookup,
+    CurrencyLookup,
     DataTypeLookup,
     FieldTypeLookup,
     MarketSegmentLookup,
     MetaSeriesCreate,
     ProductTypeLookup,
+    RegionLookup,
     StructureTypeLookup,
     SubAssetClassLookup,
+    TenorLookup,
+    TermLookup,
     TickerSourceLookup,
 )
 
-
-class LookupTableCSVConfig(Config):
-    """Configuration for loading lookup tables from CSV."""
-
-    csv_path: str = "data/lookup_tables.csv"  # Path to CSV file
-    allowed_names_csv_path: str = "data/allowed_names.csv"  # Path to CSV with allowed names
-    lookup_table_type: str = "all"  # Type: "all" (load all types), or specific: asset_class, product_type, sub_asset_class, data_type, structure_type, market_segment, field_type, ticker_source
-
-
-class MetaSeriesCSVConfig(Config):
-    """Configuration for loading meta series from CSV."""
-
-    csv_path: str = "data/meta_series.csv"  # Path to CSV file with meta series data
+from .config import LookupTableCSVConfig, MetaSeriesCSVConfig
 
 
 def load_allowed_names(csv_path: str, lookup_table_type: str) -> Set[str]:
@@ -340,6 +330,34 @@ def process_wide_format_lookup(
             name=name, description=description, ticker_source_code=ticker_source_code
         )
 
+    def create_region_lookup(name: str, description: Optional[str]) -> RegionLookup:
+        """Create a RegionLookup object."""
+        return RegionLookup(name=name, description=description)
+
+    def create_currency_lookup(
+        name: str, description: Optional[str], currency_code: Optional[str] = None
+    ) -> CurrencyLookup:
+        """Create a CurrencyLookup object."""
+        return CurrencyLookup(
+            name=name, description=description, currency_code=currency_code or name
+        )
+
+    def create_term_lookup(name: str, description: Optional[str]) -> TermLookup:
+        """Create a TermLookup object."""
+        return TermLookup(name=name, description=description)
+
+    def create_tenor_lookup(
+        name: str, description: Optional[str], tenor_code: Optional[str] = None
+    ) -> TenorLookup:
+        """Create a TenorLookup object."""
+        return TenorLookup(name=name, description=description, tenor_code=tenor_code or name)
+
+    def create_country_lookup(
+        name: str, description: Optional[str], country_code: Optional[str] = None
+    ) -> CountryLookup:
+        """Create a CountryLookup object."""
+        return CountryLookup(name=name, description=description, country_code=country_code or name)
+
     # Processor functions for each lookup type
     def process_asset_class(values: list, allowed_names: Set[str]) -> Dict[str, int]:
         """Process asset_class lookup values."""
@@ -419,6 +437,100 @@ def process_wide_format_lookup(
             "ticker_source_id",
         )
 
+    def process_region(values: list, allowed_names: Set[str]) -> Dict[str, int]:
+        """Process region lookup values."""
+        return process_simple_lookup_type(
+            context,
+            lookup_manager,
+            "region",
+            values,
+            allowed_names,
+            create_region_lookup,
+            lookup_manager.insert_region,
+            lookup_manager.get_region_by_name,
+            "region_id",
+        )
+
+    def process_currency(values: list, allowed_names: Set[str]) -> Dict[str, int]:
+        """Process currency lookup values."""
+        results = {}
+        for value in values:
+            if not value or str(value).strip() == "":
+                continue
+            code = str(value).strip()
+            validate_lookup_name(code, allowed_names, "currency")
+            try:
+                existing = lookup_manager.get_currency_by_code(code)
+                if existing:
+                    context.log.info(f"currency '{code}' already exists, using existing ID")
+                    results[code] = existing["currency_id"]
+                else:
+                    currency_lookup = create_currency_lookup(code, None, code)
+                    lookup_id = lookup_manager.insert_currency(currency_lookup)
+                    results[code] = lookup_id
+            except Exception as e:
+                context.log.error(f"Error processing currency {code}: {e}")
+                raise
+        return results
+
+    def process_term(values: list, allowed_names: Set[str]) -> Dict[str, int]:
+        """Process term lookup values."""
+        return process_simple_lookup_type(
+            context,
+            lookup_manager,
+            "term",
+            values,
+            allowed_names,
+            create_term_lookup,
+            lookup_manager.insert_term,
+            lookup_manager.get_term_by_name,
+            "term_id",
+        )
+
+    def process_tenor(values: list, allowed_names: Set[str]) -> Dict[str, int]:
+        """Process tenor lookup values."""
+        results = {}
+        for value in values:
+            if not value or str(value).strip() == "":
+                continue
+            code = str(value).strip()
+            validate_lookup_name(code, allowed_names, "tenor")
+            try:
+                existing = lookup_manager.get_tenor_by_code(code)
+                if existing:
+                    context.log.info(f"tenor '{code}' already exists, using existing ID")
+                    results[code] = existing["tenor_id"]
+                else:
+                    tenor_lookup = create_tenor_lookup(code, None, code)
+                    lookup_id = lookup_manager.insert_tenor(tenor_lookup)
+                    results[code] = lookup_id
+            except Exception as e:
+                context.log.error(f"Error processing tenor {code}: {e}")
+                raise
+        return results
+
+    def process_country(values: list, allowed_names: Set[str]) -> Dict[str, int]:
+        """Process country lookup values."""
+        results = {}
+        for value in values:
+            if not value or str(value).strip() == "":
+                continue
+            code = str(value).strip()
+            validate_lookup_name(code, allowed_names, "country")
+            try:
+                existing = lookup_manager.get_country_by_code(code)
+                if existing:
+                    context.log.info(f"country '{code}' already exists, using existing ID")
+                    results[code] = existing["country_id"]
+                else:
+                    country_lookup = create_country_lookup(code, None, code)
+                    lookup_id = lookup_manager.insert_country(country_lookup)
+                    results[code] = lookup_id
+            except Exception as e:
+                context.log.error(f"Error processing country {code}: {e}")
+                raise
+        return results
+
     def get_asset_class_mapping() -> Dict[str, int]:
         """Get the asset_class mapping."""
         return asset_class_mapping
@@ -432,6 +544,11 @@ def process_wide_format_lookup(
         "market_segment": (process_market_segment, None),
         "field_type": (process_field_type, None),
         "ticker_source": (process_ticker_source, None),
+        "region": (process_region, None),
+        "currency": (process_currency, None),
+        "term": (process_term, None),
+        "tenor": (process_tenor, None),
+        "country": (process_country, None),
     }
 
     # Process independent lookup types first
@@ -558,6 +675,80 @@ def process_long_format_lookup(
         """Handle ticker_source insertion for long format."""
         _handle_ticker_source(lookup_manager, name, description, row, results)
 
+    def handle_region(name: str, description: Optional[str], row: Dict[str, Any]) -> None:
+        """Handle region insertion for long format."""
+        _handle_simple_lookup(
+            lookup_manager,
+            name,
+            description,
+            RegionLookup,
+            lookup_manager.insert_region,
+            lookup_manager.get_region_by_name,
+            "region_id",
+            results,
+        )
+
+    def handle_currency(name: str, description: Optional[str], row: Dict[str, Any]) -> None:
+        """Handle currency insertion for long format."""
+        existing = lookup_manager.get_currency_by_code(name)
+        if existing:
+            results[name] = existing["currency_id"]
+        else:
+            currency_code = row.get("currency_code", name)
+            currency_name = row.get("currency_name")
+            currency_lookup = CurrencyLookup(
+                name=name,
+                description=description,
+                currency_code=currency_code,
+                currency_name=currency_name,
+            )
+            lookup_id = lookup_manager.insert_currency(currency_lookup)
+            results[name] = lookup_id
+
+    def handle_term(name: str, description: Optional[str], row: Dict[str, Any]) -> None:
+        """Handle term insertion for long format."""
+        _handle_simple_lookup(
+            lookup_manager,
+            name,
+            description,
+            TermLookup,
+            lookup_manager.insert_term,
+            lookup_manager.get_term_by_name,
+            "term_id",
+            results,
+        )
+
+    def handle_tenor(name: str, description: Optional[str], row: Dict[str, Any]) -> None:
+        """Handle tenor insertion for long format."""
+        existing = lookup_manager.get_tenor_by_code(name)
+        if existing:
+            results[name] = existing["tenor_id"]
+        else:
+            tenor_code = row.get("tenor_code", name)
+            tenor_name = row.get("tenor_name")
+            tenor_lookup = TenorLookup(
+                name=name, description=description, tenor_code=tenor_code, tenor_name=tenor_name
+            )
+            lookup_id = lookup_manager.insert_tenor(tenor_lookup)
+            results[name] = lookup_id
+
+    def handle_country(name: str, description: Optional[str], row: Dict[str, Any]) -> None:
+        """Handle country insertion for long format."""
+        existing = lookup_manager.get_country_by_code(name)
+        if existing:
+            results[name] = existing["country_id"]
+        else:
+            country_code = row.get("country_code", name)
+            country_name = row.get("country_name")
+            country_lookup = CountryLookup(
+                name=name,
+                description=description,
+                country_code=country_code,
+                country_name=country_name,
+            )
+            lookup_id = lookup_manager.insert_country(country_lookup)
+            results[name] = lookup_id
+
     # Define handlers for each lookup type
     handlers = {
         "asset_class": handle_asset_class,
@@ -568,6 +759,11 @@ def process_long_format_lookup(
         "market_segment": handle_market_segment,
         "field_type": handle_field_type,
         "ticker_source": handle_ticker_source,
+        "region": handle_region,
+        "currency": handle_currency,
+        "term": handle_term,
+        "tenor": handle_tenor,
+        "country": handle_country,
     }
 
     handler = handlers.get(config.lookup_table_type)
@@ -715,145 +911,21 @@ def _handle_ticker_source(
         results[name] = lookup_id
 
 
-@asset(
-    group_name="metadata",
-    description="Initialize database schema - create all required tables",
-    io_manager_key="polars_parquet_io_manager",
-    kinds=["clickhouse"],
-    owners=["team:mqrm-data-eng"],
-    tags={"m360-mqrm": ""},
-)
-def init_database_schema(
-    context: AssetExecutionContext,
-    clickhouse: ClickHouseResource,
-) -> pl.DataFrame:
-    """Initialize database schema by creating all required tables."""
-    context.log.info("Initializing database schema...")
-    clickhouse.setup_schema()
-    context.log.info("Database schema initialized successfully")
-    # Return as DataFrame for polars_parquet_io_manager
-    return pl.DataFrame({"status": ["Schema initialized"], "timestamp": [datetime.now()]})
-
-
-@asset(
-    group_name="metadata",
-    description="Load lookup tables from CSV with validation against allowed names",
-    deps=[AssetKey("init_database_schema")],  # Schema must be initialized first
-    io_manager_key="polars_parquet_io_manager",
-    kinds=["csv", "clickhouse"],
-    owners=["team:mqrm-data-eng"],
-    tags={"m360-mqrm": ""},
-)
-def load_lookup_tables_from_csv(
-    context: AssetExecutionContext,
-    config: LookupTableCSVConfig,
-    clickhouse: ClickHouseResource,
-) -> pl.DataFrame:
-    """Load lookup tables from CSV file with validation.
-
-    Supports two CSV formats:
-    1. Wide format: Columns are lookup table types (asset_class, product_type, etc.)
-       When in wide format and lookup_table_type is "all", processes all lookup tables.
-    2. Long format: Has lookup_table_type and name columns
-    """
-    context.log.info(f"Loading {config.lookup_table_type} from {config.csv_path}")
-
-    # Load lookup table data
-    df = read_csv_safe(config.csv_path)
-
-    lookup_manager = LookupTableManager(clickhouse)
-    available_columns = [col for col in LOOKUP_TABLE_COLUMNS if col in df.columns]
-
-    if available_columns:
-        # Wide format: process all lookup tables
-        context.log.info(f"Detected wide format with columns: {available_columns}")
-        all_results = process_wide_format_lookup(
-            context, lookup_manager, df, config, available_columns
-        )
-
-        # Return results based on requested type
-        if config.lookup_table_type != "all" and config.lookup_table_type in all_results:
-            results = all_results[config.lookup_table_type]
-            # Convert dictionary to Polars DataFrame
-            result_df = pl.DataFrame(
-                [
-                    {"lookup_table_type": config.lookup_table_type, "name": name, "id": id_val}
-                    for name, id_val in results.items()
-                ]
-            )
-            context.add_output_metadata(
-                {
-                    "lookups_loaded": MetadataValue.int(len(result_df)),
-                    "lookup_table_type": MetadataValue.text(config.lookup_table_type),
-                    "details": MetadataValue.json(results),
-                }
-            )
-            return result_df
-        elif config.lookup_table_type == "all":
-            total_loaded = sum(len(v) for v in all_results.values())
-            # Convert all results to a single DataFrame
-            rows = []
-            for lookup_type, type_results in all_results.items():
-                for name, id_val in type_results.items():
-                    rows.append({"lookup_table_type": lookup_type, "name": name, "id": id_val})
-            result_df = pl.DataFrame(rows)
-            context.add_output_metadata(
-                {
-                    "lookups_loaded": MetadataValue.int(total_loaded),
-                    "lookup_table_type": MetadataValue.text("all"),
-                    "details": MetadataValue.json(all_results),
-                }
-            )
-            return result_df
-        else:
-            raise ValueError(
-                f"lookup_table_type '{config.lookup_table_type}' not found in CSV columns. "
-                f"Available columns: {available_columns}"
-            )
-
-    elif "name" in df.columns:
-        # Long format: has lookup_table_type and name columns
-        results = process_long_format_lookup(context, lookup_manager, df, config)
-        # Convert dictionary to Polars DataFrame
-        result_df = pl.DataFrame(
-            [
-                {"lookup_table_type": config.lookup_table_type, "name": name, "id": id_val}
-                for name, id_val in results.items()
-            ]
-        )
-        context.add_output_metadata(
-            {
-                "lookups_loaded": MetadataValue.int(len(result_df)),
-                "lookup_table_type": MetadataValue.text(config.lookup_table_type),
-                "details": MetadataValue.json(results),
-            }
-        )
-        return result_df
-    else:
-        raise CSVValidationError(
-            f"CSV file {config.csv_path} must have lookup table columns "
-            f"(wide format: {LOOKUP_TABLE_COLUMNS}) or 'name' column (long format)"
-        )
-
-
-@asset(
-    group_name="metadata",
-    description="Load meta series from CSV file",
-    deps=[
-        AssetKey("init_database_schema"),  # Schema must be initialized first
-        AssetKey("load_lookup_tables_from_csv"),  # Depends on lookup tables being loaded first
-    ],
-    io_manager_key="polars_parquet_io_manager",
-    kinds=["csv", "clickhouse"],
-    owners=["team:mqrm-data-eng"],
-    tags={"m360-mqrm": ""},
-)
-def load_meta_series_from_csv(
+def load_meta_series_logic(
     context: AssetExecutionContext,
     config: MetaSeriesCSVConfig,
     clickhouse: ClickHouseResource,
 ) -> pl.DataFrame:
-    """Load meta series from CSV file."""
+    """Load meta series from CSV file logic.
+
+    Args:
+        context: Dagster execution context
+        config: Meta series CSV configuration
+        clickhouse: ClickHouse resource
+
+    Returns:
+        DataFrame with loaded meta series results
+    """
     context.log.info(f"Loading meta series from {config.csv_path}")
 
     # Load meta series data
@@ -867,6 +939,7 @@ def load_meta_series_from_csv(
     validate_csv_columns(df, META_SERIES_REQUIRED_COLUMNS, config.csv_path)
 
     meta_manager = MetaSeriesManager(clickhouse)
+    lookup_manager = LookupTableManager(clickhouse)
     results = {}
 
     # Process each row
@@ -880,6 +953,68 @@ def load_meta_series_from_csv(
             # Parse data_source
             data_source_str = str(row.get("data_source", ""))
             data_source = parse_data_source(data_source_str)
+
+            # Look up IDs for region, currency, term, tenor, country if string values are provided
+            region_id = resolve_lookup_id_from_string(
+                row,
+                "region_id",
+                "region",
+                lookup_manager,
+                "get_region_by_name",
+                context,
+            )
+
+            currency_id = resolve_lookup_id_from_string(
+                row,
+                "currency_id",
+                "currency",
+                lookup_manager,
+                "get_currency_by_code",
+                context,
+            )
+
+            term_id = resolve_lookup_id_from_string(
+                row,
+                "term_id",
+                "term",
+                lookup_manager,
+                "get_term_by_name",
+                context,
+            )
+
+            tenor_id = resolve_lookup_id_from_string(
+                row,
+                "tenor_id",
+                "tenor",
+                lookup_manager,
+                "get_tenor_by_code",
+                context,
+            )
+
+            # Country can be in either "country" or "countries" field
+            country_id = resolve_lookup_id_from_string(
+                row,
+                "country_id",
+                "country",
+                lookup_manager,
+                "get_country_by_code",
+                context,
+            )
+            if not country_id:
+                country_id = resolve_lookup_id_from_string(
+                    row,
+                    "country_id",
+                    "countries",
+                    lookup_manager,
+                    "get_country_by_code",
+                    context,
+                )
+
+            # Parse is_active (default to True if not provided)
+            is_active = True
+            if row.get("is_active") is not None:
+                is_active_val = str(row.get("is_active")).strip().lower()
+                is_active = is_active_val in ("1", "true", "yes", "y", "active")
 
             meta_series = MetaSeriesCreate(
                 series_name=str(row["series_name"]),
@@ -906,10 +1041,16 @@ def load_meta_series_from_csv(
                     row.get("ticker_source_id"), "ticker_source_id", required=False
                 ),
                 ticker=str(row["ticker"]),
+                region_id=region_id,
+                currency_id=currency_id,
+                term_id=term_id,
+                tenor_id=tenor_id,
+                country_id=country_id,
                 calculation_formula=str(row["calculation_formula"])
                 if row.get("calculation_formula")
                 else None,
                 description=str(row["description"]) if row.get("description") else None,
+                is_active=is_active,
             )
 
             # Check if series already exists
@@ -923,9 +1064,23 @@ def load_meta_series_from_csv(
                 series_id = meta_manager.create_meta_series(meta_series, created_by="csv_loader")
                 results[meta_series.series_code] = series_id
 
-        except Exception as e:
-            context.log.error(f"Error processing row for {row.get('series_code', 'unknown')}: {e}")
+        except (CSVValidationError, DataSourceValidationError, MetaSeriesNotFoundError) as e:
+            context.log.error(
+                f"Validation error processing row for {row.get('series_code', 'unknown')}: {e}"
+            )
             raise
+        except (ValueError, TypeError) as e:
+            context.log.error(
+                f"Data error processing row for {row.get('series_code', 'unknown')}: {e}"
+            )
+            raise CSVValidationError(
+                f"Invalid data in row for {row.get('series_code', 'unknown')}: {e}"
+            ) from e
+        except Exception as e:
+            context.log.error(
+                f"Unexpected error processing row for {row.get('series_code', 'unknown')}: {e}"
+            )
+            raise CSVValidationError(f"Unexpected error processing row: {e}") from e
 
     # Convert dictionary to Polars DataFrame
     result_df = pl.DataFrame(
@@ -934,11 +1089,5 @@ def load_meta_series_from_csv(
             for series_code, series_id in results.items()
         ]
     )
-    context.add_output_metadata(
-        {
-            "series_loaded": MetadataValue.int(len(result_df)),
-            "details": MetadataValue.json(results),
-        }
-    )
 
-    return result_df
+    return result_df, results

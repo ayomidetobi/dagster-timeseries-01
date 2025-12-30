@@ -1,19 +1,24 @@
 """Lookup table management for the financial platform."""
 
-from datetime import datetime
 from typing import Any, Dict, Optional
 
-from dagster_clickhouse.resources import ClickHouseResource
+from dagster_quickstart.resources import ClickHouseResource
 from dagster_quickstart.utils.constants import DB_COLUMNS, DB_TABLES
+from dagster_quickstart.utils.datetime_utils import utc_now_metadata
 from dagster_quickstart.utils.exceptions import DatabaseError
 from database.models import (
     AssetClassLookup,
+    CountryLookup,
+    CurrencyLookup,
     DataTypeLookup,
     FieldTypeLookup,
     MarketSegmentLookup,
     ProductTypeLookup,
+    RegionLookup,
     StructureTypeLookup,
     SubAssetClassLookup,
+    TenorLookup,
+    TermLookup,
     TickerSourceLookup,
 )
 from database.utils import (
@@ -53,7 +58,7 @@ class LookupTableManager:
         """
         table_name = DB_TABLES[lookup_type]
         id_column, name_column = DB_COLUMNS[lookup_type]
-        now = datetime.now()
+        now = utc_now_metadata()
 
         if record_id:
             # Update existing record
@@ -226,3 +231,84 @@ class LookupTableManager:
     def get_ticker_source_by_name(self, name: str) -> Optional[Dict[str, Any]]:
         """Get ticker source by name."""
         return self._get_lookup_by_name("ticker_source", name)
+
+    def get_ticker_source_by_code(self, code: str) -> Optional[Dict[str, Any]]:
+        """Get ticker source by code."""
+        table_name = DB_TABLES["ticker_source"]
+        return get_by_name(self.clickhouse, table_name, "ticker_source_code", code)
+
+    # Region methods
+    def insert_region(self, region: RegionLookup) -> int:
+        """Insert or update a region."""
+        return self._insert_or_update_lookup(
+            "region",
+            region.region_id,
+            region.name,
+            region.description,
+        )
+
+    def get_region_by_name(self, name: str) -> Optional[Dict[str, Any]]:
+        """Get region by name."""
+        return self._get_lookup_by_name("region", name)
+
+    # Currency methods
+    def insert_currency(self, currency: CurrencyLookup) -> int:
+        """Insert or update a currency."""
+        return self._insert_or_update_lookup(
+            "currency",
+            currency.currency_id,
+            currency.currency_code,
+            currency.description,
+            extra_fields={"currency_name": currency.currency_name},
+        )
+
+    def get_currency_by_code(self, code: str) -> Optional[Dict[str, Any]]:
+        """Get currency by code."""
+        table_name = DB_TABLES["currency"]
+        return get_by_name(self.clickhouse, table_name, "currency_code", code)
+
+    # Term methods
+    def insert_term(self, term: TermLookup) -> int:
+        """Insert or update a term."""
+        return self._insert_or_update_lookup(
+            "term",
+            term.term_id,
+            term.name,
+            term.description,
+        )
+
+    def get_term_by_name(self, name: str) -> Optional[Dict[str, Any]]:
+        """Get term by name."""
+        return self._get_lookup_by_name("term", name)
+
+    # Tenor methods
+    def insert_tenor(self, tenor: TenorLookup) -> int:
+        """Insert or update a tenor."""
+        return self._insert_or_update_lookup(
+            "tenor",
+            tenor.tenor_id,
+            tenor.tenor_code,
+            tenor.description,
+            extra_fields={"tenor_name": tenor.tenor_name},
+        )
+
+    def get_tenor_by_code(self, code: str) -> Optional[Dict[str, Any]]:
+        """Get tenor by code."""
+        table_name = DB_TABLES["tenor"]
+        return get_by_name(self.clickhouse, table_name, "tenor_code", code)
+
+    # Country methods
+    def insert_country(self, country: CountryLookup) -> int:
+        """Insert or update a country."""
+        return self._insert_or_update_lookup(
+            "country",
+            country.country_id,
+            country.country_code,
+            country.description,
+            extra_fields={"country_name": country.country_name},
+        )
+
+    def get_country_by_code(self, code: str) -> Optional[Dict[str, Any]]:
+        """Get country by code."""
+        table_name = DB_TABLES["country"]
+        return get_by_name(self.clickhouse, table_name, "country_code", code)
