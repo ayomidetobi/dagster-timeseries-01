@@ -133,3 +133,30 @@ RETRY_POLICY_MAX_RETRIES_INGESTION = 3
 RETRY_POLICY_DELAY_INGESTION = 2.0
 RETRY_POLICY_MAX_RETRIES_CSV_LOADER = 2
 RETRY_POLICY_DELAY_CSV_LOADER = 1.0
+
+# Data quality constants
+# Timeliness thresholds (in hours)
+MAX_DATA_AGE_HOURS = 24
+MAX_DATA_GAP_MULTIPLIER = 3.0  # Max gap is 3x median gap
+
+# Completeness thresholds (percentage)
+MAX_NULL_PERCENTAGE_DEFAULT = 5.0
+MAX_NULL_PERCENTAGE_REQUIRED_FIELDS = 0.0
+
+# Accuracy thresholds
+MAX_OUTLIER_PERCENTAGE = 5.0  # Max percentage of outliers allowed
+
+# Great Expectations configuration
+GE_DATASOURCE_NAME = "dagster_datasource"
+GE_DATA_CONNECTOR_NAME = "default_runtime_data_connector"
+GE_EXPECTATION_SUITE_PREFIX = "dagster_"
+
+# Data quality dimension names
+DATA_QUALITY_DIMENSIONS = [
+    "timeliness",
+    "completeness",
+    "accuracy",
+    "validity",
+    "uniqueness",
+    "consistency",
+]

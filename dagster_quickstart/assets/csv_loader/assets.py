@@ -42,12 +42,12 @@ def init_database_schema(
     context: AssetExecutionContext,
     clickhouse: ClickHouseResource,
 ) -> pl.DataFrame:
-    """Initialize database schema using clickhouse-migrate.
+    """Initialize database schema using clickhouse-migrations.
 
     This asset ensures the database exists and runs all pending migrations
     to set up the database schema.
     """
-    context.log.info("Initializing database schema using clickhouse-migrate...")
+    context.log.info("Initializing database schema using clickhouse-migrations...")
 
     try:
         # Ensure database exists
@@ -58,7 +58,7 @@ def init_database_schema(
         clickhouse.run_migrations()
         context.log.info("ClickHouse migrations applied successfully")
     except Exception as e:
-        context.log.error(f"Error initializing schema with clickhouse-migrate: {e}")
+        context.log.error(f"Error initializing schema with clickhouse-migrations: {e}")
         raise
 
     context.log.info("Database schema initialized successfully")

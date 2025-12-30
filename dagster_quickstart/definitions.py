@@ -3,6 +3,7 @@ from dagster import (
     Definitions,
     ScheduleDefinition,
     define_asset_job,
+    load_asset_checks_from_modules,
     load_assets_from_modules,
 )
 from dagster_msteams import (
@@ -27,9 +28,16 @@ from dagster_quickstart.notifications.teams_messages import (
 )
 
 # from dagster_quickstart.resources import PyPDLResource
-from dagster_quickstart.resources import ClickHouseResource, OutlookEmailResource
+from dagster_quickstart.resources import (
+    ClickHouseResource,
+    GreatExpectationsResource,
+    OutlookEmailResource,
+)
 
 all_assets = load_assets_from_modules([ingestion, calculations, csv_loader, hackernews])
+
+# Load asset checks
+all_asset_checks = load_asset_checks_from_modules([csv_loader])
 
 # Define resources
 # ClickHouseResource is a ConfigurableResource, so we can instantiate it directly
@@ -41,6 +49,7 @@ resources = {
     "polars_parquet_io_manager": PolarsParquetIOManager(base_dir="data/parquet"),
     "msteams": MSTeamsResource(hook_url=config("TEAMS_WEBHOOK_URL")),
     "outlook_email": OutlookEmailResource.from_config(),
+    "great_expectations": GreatExpectationsResource(),
 }
 # Define jobs
 ingestion_job = define_asset_job(
@@ -108,6 +117,7 @@ outlook_email_failure_sensor = outlook_email_on_run_failure
 
 defs = Definitions(
     assets=all_assets,
+    asset_checks=all_asset_checks,
     jobs=[ingestion_job, metadata_job, calculations_job],
     schedules=[ingestion_schedule, calculations_schedule],
     sensors=[teams_on_run_failure, outlook_email_failure_sensor],
