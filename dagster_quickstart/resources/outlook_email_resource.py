@@ -121,4 +121,3 @@ class OutlookEmailResource(ConfigurableResource):
             smtp_type=config("OUTLOOK_SMTP_TYPE", default="STARTTLS"),
             smtp_user=config("OUTLOOK_SMTP_USER", default=None),
         )
-

@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Optional
 
 from dagster import get_dagster_logger
 
-from dagster_clickhouse.resources import ClickHouseResource
+from dagster_quickstart.resources import ClickHouseResource
 from dagster_quickstart.utils.constants import DEFAULT_BATCH_SIZE
 from dagster_quickstart.utils.datetime_utils import validate_timestamp
 from dagster_quickstart.utils.exceptions import DatabaseInsertError

@@ -122,7 +122,9 @@ class PyPDLResource(ConfigurableResource):
         all_results: List[Dict[str, Any]] = []
         errors: List[Exception] = []
 
-        for batch_idx, batch_result in enumerate[List[Dict[str, Any]] | BaseException](batch_results):
+        for batch_idx, batch_result in enumerate[List[Dict[str, Any]] | BaseException](
+            batch_results
+        ):
             if isinstance(batch_result, Exception):
                 logger.error(
                     f"Batch {batch_idx} failed: {batch_result}",
@@ -398,11 +400,7 @@ def _get_valid_indices(
                 },
             )
 
-    return [
-        item_index
-        for item_index in range(batch_size)
-        if item_index + 1 not in error_indices
-    ]
+    return [item_index for item_index in range(batch_size) if item_index + 1 not in error_indices]
 
 
 def _convert_to_data_points(

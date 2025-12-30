@@ -3,6 +3,7 @@
 from typing import List, Optional
 
 from dagster import (
+    DagsterRunStatus,
     RunFailureSensorContext,
     RunStatusSensorContext,
     SkipReason,
@@ -14,7 +15,7 @@ from dagster_quickstart.notifications.email_messages import (
     failure_message_fn,
     success_message_fn,
 )
-from dagster_quickstart.notifications.outlook_email_resource import OutlookEmailResource
+from dagster_quickstart.resources import OutlookEmailResource
 
 
 @run_failure_sensor
@@ -60,7 +61,7 @@ def outlook_email_on_run_failure(
 
 
 @run_status_sensor(
-    run_status="SUCCESS",
+    run_status=DagsterRunStatus.SUCCESS,
 )
 def outlook_email_on_run_success(
     context: RunStatusSensorContext,
@@ -107,4 +108,3 @@ def outlook_email_on_run_success(
         )
         # Don't fail the sensor, just log the error
         return SkipReason(f"Failed to send email notification: {e}")
-

@@ -12,13 +12,11 @@ from dagster_quickstart.notifications.message_builders import (
     build_failure_message,
     build_success_message,
 )
-from dagster_quickstart.notifications.outlook_email_resource import (
-    OutlookEmailResource,
-)
 from dagster_quickstart.notifications.teams_messages import (
     failure_message_fn,
     success_message_fn,
 )
+from dagster_quickstart.resources import OutlookEmailResource
 
 __all__ = [
     # Shared message builders

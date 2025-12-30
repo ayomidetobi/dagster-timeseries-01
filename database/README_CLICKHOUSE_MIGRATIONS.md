@@ -72,7 +72,7 @@ migrations = [
 clickhouse-migrate migrate
 
 # Or use the Python helper
-python -c "from dagster_clickhouse.resources import ClickHouseResource; ClickHouseResource.from_config().run_migrations()"
+python -c "from dagster_quickstart.resources import ClickHouseResource; ClickHouseResource.from_config().run_migrations()"
 ```
 
 ### Creating New Migrations
@@ -115,7 +115,7 @@ init_database_schema(context, clickhouse)
 You can also run migrations programmatically using ClickHouseResource:
 
 ```python
-from dagster_clickhouse.resources import ClickHouseResource
+from dagster_quickstart.resources import ClickHouseResource
 
 clickhouse = ClickHouseResource.from_config()
 

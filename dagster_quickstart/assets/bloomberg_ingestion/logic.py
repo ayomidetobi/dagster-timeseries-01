@@ -1,40 +1,22 @@
-"""Bloomberg data ingestion using pyeqdr.pypdl."""
+"""Bloomberg data ingestion logic using pyeqdr.pypdl."""
 
 from datetime import datetime
 from typing import Any, Dict
 
 import polars as pl
-from dagster import (
-    AssetExecutionContext,
-    AssetKey,
-    Config,
-    MetadataValue,
-    RetryPolicy,
-    asset,
-)
+from dagster import AssetExecutionContext, MetadataValue
 
-from dagster_clickhouse.pypdl_resource import PyPDLResource
-from dagster_clickhouse.resources import ClickHouseResource
-from dagster_quickstart.utils.constants import (
-    RETRY_POLICY_DELAY_INGESTION,
-    RETRY_POLICY_MAX_RETRIES_INGESTION,
-)
+from dagster_quickstart.resources import ClickHouseResource, PyPDLResource
 from dagster_quickstart.utils.datetime_utils import parse_timestamp, validate_timestamp
 from dagster_quickstart.utils.exceptions import DatabaseError, PyPDLError
-from dagster_quickstart.utils.partitions import DAILY_PARTITION, get_partition_date
 from database.lookup_tables import LookupTableManager
 from database.meta_series import MetaSeriesManager
 from database.value_data import ValueDataManager
 
-
-class BloombergIngestionConfig(Config):
-    """Configuration for Bloomberg data ingestion."""
-
-    force_refresh: bool = False  # If True, delete existing data for the partition date before inserting (ensures idempotency when re-running a partition). If False, skip insertion if data already exists for the date.
-    max_concurrent: int = 3  # Maximum concurrent PyPDL requests (overrides resource default if set)
+from .config import BloombergIngestionConfig
 
 
-async def _ingest_bloomberg_data(
+async def ingest_bloomberg_data(
     context: AssetExecutionContext,
     config: BloombergIngestionConfig,
     pypdl_resource: PyPDLResource,
@@ -121,7 +103,7 @@ async def _ingest_bloomberg_data(
         field_type = None
         if hasattr(result, "result_rows") and result.result_rows:
             columns = result.column_names
-            field_type = dict[Any, Any](zip[tuple[Any, Any]](columns, result.result_rows[0]))
+            field_type = dict(zip(columns, result.result_rows[0]))
 
         if not field_type:
             context.log.warning(f"Could not find field_type for series {series_id}, skipping")
@@ -151,9 +133,7 @@ async def _ingest_bloomberg_data(
 
     # Determine max_concurrent to use (config override or resource default)
     # Pass as parameter instead of mutating resource (thread-safe)
-    max_concurrent_override = (
-        config.max_concurrent if config.max_concurrent else None
-    )
+    max_concurrent_override = config.max_concurrent if config.max_concurrent else None
     if max_concurrent_override:
         context.log.info(
             f"Using max_concurrent={max_concurrent_override} from config "
@@ -332,52 +312,3 @@ async def _ingest_bloomberg_data(
     )
 
     return pl.DataFrame(summary_data)
-
-
-@asset(
-    group_name="ingestion",
-    description="Ingest Bloomberg data for all active metaSeries using pyeqdr.pypdl",
-    deps=[AssetKey("load_meta_series_from_csv")],
-    kinds=["clickhouse"],
-    owners=["team:mqrm-data-eng"],
-    tags={"m360-mqrm": "", "bloomberg": "", "pypdl": ""},
-    retry_policy=RetryPolicy(
-        max_retries=RETRY_POLICY_MAX_RETRIES_INGESTION, delay=RETRY_POLICY_DELAY_INGESTION
-    ),
-    partitions_def=DAILY_PARTITION,
-)
-async def ingest_bloomberg_data_async(
-    context: AssetExecutionContext,
-    config: BloombergIngestionConfig,
-    pypdl_resource: PyPDLResource,
-    clickhouse: ClickHouseResource,
-) -> pl.DataFrame:
-    """Ingest Bloomberg data for all active metaSeries using PyPDL (async).
-
-    This asset is partitioned by day for backfill-safety. Each partition processes
-    data for a specific date.
-
-    This asset:
-    1. Fetches all active metaSeries with Bloomberg ticker source
-    2. Gets the field_type_code from field_type lookup
-    3. Constructs data_source as "bloomberg/ts/{field_type_code}"
-    4. Uses ticker as data_code
-    5. Fetches data from Bloomberg via PyPDL asynchronously for the partition date
-    6. Saves data to ClickHouse valueData table
-
-    Args:
-        context: Dagster execution context (includes partition key)
-        config: Bloomberg ingestion configuration
-        pypdl_resource: PyPDL resource
-        clickhouse: ClickHouse resource
-
-    Returns:
-        Summary DataFrame with ingestion results
-    """
-    # Get partition date from context
-    partition_key = context.partition_key
-    target_date = get_partition_date(partition_key)
-    context.log.info("Processing partition %s (date: %s)", partition_key, target_date.date())
-
-    # Run async ingestion function (Dagster handles the event loop)
-    return await _ingest_bloomberg_data(context, config, pypdl_resource, clickhouse, target_date)

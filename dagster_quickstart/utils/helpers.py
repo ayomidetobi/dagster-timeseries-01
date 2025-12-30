@@ -7,7 +7,7 @@ import pandas as pd
 import polars as pl
 from dagster import AssetExecutionContext
 
-from dagster_clickhouse.resources import ClickHouseResource
+from dagster_quickstart.resources import ClickHouseResource
 from dagster_quickstart.utils.datetime_utils import UTC, parse_datetime_string
 from dagster_quickstart.utils.exceptions import (
     CSVValidationError,

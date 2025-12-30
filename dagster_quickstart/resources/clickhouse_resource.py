@@ -115,10 +115,9 @@ class ClickHouseResource(ConfigurableResource):
         Returns:
             Path to migrations directory
         """
-        # Assume migrations directory is at project root
-        # This works when called from dagster_clickhouse package
+        # Get project root (two levels up from this file: resources -> dagster_quickstart -> project root)
         current_file = Path(__file__)
-        project_root = current_file.parent.parent
+        project_root = current_file.parent.parent.parent
         migrations_dir = project_root / "migrations"
         migrations_dir.mkdir(exist_ok=True)
         return migrations_dir

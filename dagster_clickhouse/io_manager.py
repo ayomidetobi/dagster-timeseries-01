@@ -11,7 +11,7 @@ from dagster import (
     io_manager,
 )
 
-from dagster_clickhouse.resources import ClickHouseResource
+from dagster_quickstart.resources import ClickHouseResource
 from dagster_quickstart.utils.constants import DEFAULT_BATCH_SIZE
 from dagster_quickstart.utils.datetime_utils import (
     ensure_utc,
@@ -54,9 +54,7 @@ class ClickHouseIOManager(ConfigurableIOManager):
         elif isinstance(obj, TimeSeriesBatch):
             self._insert_timeseries_batch(context, obj)
         # Handle list of TimeSeriesValue
-        elif isinstance(obj, list) and all(
-            isinstance(value, TimeSeriesValue) for value in obj
-        ):
+        elif isinstance(obj, list) and all(isinstance(value, TimeSeriesValue) for value in obj):
             batch = TimeSeriesBatch(series_id=obj[0].series_id, values=obj)
             self._insert_timeseries_batch(context, batch)
         else:

@@ -1,29 +1,18 @@
-"""Derived series calculation assets with dependency awareness."""
+"""Calculation logic for derived series."""
 
-from typing import Any, List
+from datetime import datetime
+from typing import Any
 
 import pandas as pd
-from dagster import (
-    AssetExecutionContext,
-    AssetKey,
-    Config,
-    MetadataValue,
-    RetryPolicy,
-    asset,
-)
+from dagster import AssetExecutionContext, MetadataValue
 
-from dagster_clickhouse.resources import ClickHouseResource
+from dagster_quickstart.resources import ClickHouseResource
 from dagster_quickstart.utils.constants import (
     CALCULATION_TYPES,
     DEFAULT_SMA_WINDOW,
     DEFAULT_WEIGHT_DIVISOR,
-    RETRY_POLICY_DELAY_DEFAULT,
-    RETRY_POLICY_MAX_RETRIES_DEFAULT,
 )
-from dagster_quickstart.utils.exceptions import (
-    CalculationError,
-    MetaSeriesNotFoundError,
-)
+from dagster_quickstart.utils.exceptions import CalculationError, MetaSeriesNotFoundError
 from dagster_quickstart.utils.helpers import (
     create_calculation_log,
     get_or_validate_meta_series,
@@ -31,60 +20,33 @@ from dagster_quickstart.utils.helpers import (
     update_calculation_log_on_error,
     update_calculation_log_on_success,
 )
-from dagster_quickstart.utils.partitions import DAILY_PARTITION, get_partition_date
 from database.dependency import CalculationLogManager, DependencyManager
 from database.meta_series import MetaSeriesManager
 
-
-class CalculationConfig(Config):
-    """Configuration for derived series calculation."""
-
-    derived_series_code: str = (
-        "TECH_COMPOSITE"  # Must match series_code in meta_series.csv, not series_name
-    )
-    formula: str = "parent1 * 0.5 + parent2 * 0.5"  # e.g., "parent1 * 0.6 + parent2 * 0.4"
-    input_series_codes: List[str] = []  # List of input series codes
+from .config import CalculationConfig
 
 
-@asset(
-    group_name="calculations",
-    description="Calculate a simple moving average derived series",
-    deps=[
-        AssetKey("init_database_schema"),  # Database schema must be initialized first
-        AssetKey("load_meta_series_from_csv"),  # Meta series must exist before calculation
-        AssetKey("ingest_bloomberg_data"),
-        AssetKey("ingest_lseg_data"),
-        AssetKey("ingest_hawkeye_data"),
-        AssetKey("ingest_ramp_data"),
-        AssetKey("ingest_onetick_data"),
-    ],  # Depends on schema, metadata and ingestion assets completing first
-    kinds=["pandas", "clickhouse"],
-    owners=["team:mqrm-data-eng"],
-    tags={"m360-mqrm": ""},
-    retry_policy=RetryPolicy(
-        max_retries=RETRY_POLICY_MAX_RETRIES_DEFAULT, delay=RETRY_POLICY_DELAY_DEFAULT
-    ),
-    partitions_def=DAILY_PARTITION,
-)
-def calculate_sma_series(
+def calculate_sma_series_logic(
     context: AssetExecutionContext,
     config: CalculationConfig,
     clickhouse: ClickHouseResource,
+    target_date: datetime,
 ) -> pd.DataFrame:
     """Calculate a simple moving average derived series.
 
-    This asset is partitioned by day for backfill-safety. Each partition calculates
-    the SMA for data up to and including the partition date.
-    """
-    partition_key = context.partition_key
-    target_date = get_partition_date(partition_key)
-    context.log.info(
-        "Calculating SMA for series: %s, partition: %s (date: %s)",
-        config.derived_series_code,
-        partition_key,
-        target_date.date(),
-    )
+    Args:
+        context: Dagster execution context
+        config: Calculation configuration
+        clickhouse: ClickHouse resource
+        target_date: Target date for calculation (from partition)
 
+    Returns:
+        DataFrame with calculated SMA series data
+
+    Raises:
+        MetaSeriesNotFoundError: If derived series not found
+        CalculationError: If calculation fails
+    """
     meta_manager = MetaSeriesManager(clickhouse)
     dep_manager = DependencyManager(clickhouse)
     calc_manager = CalculationLogManager(clickhouse)
@@ -94,11 +56,15 @@ def calculate_sma_series(
         meta_manager, config.derived_series_code, context, raise_if_not_found=True
     )
 
+    # get_or_validate_meta_series with raise_if_not_found=True should never return None
+    # but type checker doesn't know that, so we assert
     if derived_series is None:
         raise MetaSeriesNotFoundError(f"Derived series {config.derived_series_code} not found")
 
+    derived_series_id = derived_series["series_id"]
+
     # Get parent dependencies
-    parent_deps = dep_manager.get_parent_dependencies(derived_series["series_id"])
+    parent_deps = dep_manager.get_parent_dependencies(derived_series_id)
 
     if not parent_deps:
         raise CalculationError(f"No parent dependencies found for {config.derived_series_code}")
@@ -107,7 +73,7 @@ def calculate_sma_series(
     input_series_ids = [dep["parent_series_id"] for dep in parent_deps]
     calc_id = create_calculation_log(
         calc_manager,
-        derived_series["series_id"],
+        derived_series_id,
         CALCULATION_TYPES["SMA"],
         config.formula,
         input_series_ids,
@@ -143,7 +109,7 @@ def calculate_sma_series(
         # Prepare output
         output_df = pd.DataFrame(
             {
-                "series_id": [derived_series["series_id"]] * len(merged),
+                "series_id": [derived_series_id] * len(merged),
                 "timestamp": merged["timestamp"],
                 "value": merged["value"],
             }
@@ -168,45 +134,27 @@ def calculate_sma_series(
         raise CalculationError(f"Calculation failed: {e}") from e
 
 
-@asset(
-    group_name="calculations",
-    description="Calculate a weighted composite derived series",
-    deps=[
-        AssetKey("init_database_schema"),  # Database schema must be initialized first
-        AssetKey("load_meta_series_from_csv"),  # Meta series must exist before calculation
-        AssetKey("ingest_bloomberg_data"),
-        AssetKey("ingest_lseg_data"),
-        AssetKey("ingest_hawkeye_data"),
-        AssetKey("ingest_ramp_data"),
-        AssetKey("ingest_onetick_data"),
-    ],  # Depends on schema, metadata and ingestion assets completing first
-    kinds=["pandas", "clickhouse"],
-    owners=["team:mqrm-data-eng"],
-    tags={"m360-mqrm": ""},
-    retry_policy=RetryPolicy(
-        max_retries=RETRY_POLICY_MAX_RETRIES_DEFAULT, delay=RETRY_POLICY_DELAY_DEFAULT
-    ),
-    partitions_def=DAILY_PARTITION,
-)
-def calculate_weighted_composite(
+def calculate_weighted_composite_logic(
     context: AssetExecutionContext,
     config: CalculationConfig,
     clickhouse: ClickHouseResource,
+    target_date: datetime,
 ) -> pd.DataFrame:
     """Calculate a weighted composite derived series.
 
-    This asset is partitioned by day for backfill-safety. Each partition calculates
-    the weighted composite for data up to and including the partition date.
-    """
-    partition_key = context.partition_key
-    target_date = get_partition_date(partition_key)
-    context.log.info(
-        "Calculating weighted composite: %s, partition: %s (date: %s)",
-        config.derived_series_code,
-        partition_key,
-        target_date.date(),
-    )
+    Args:
+        context: Dagster execution context
+        config: Calculation configuration
+        clickhouse: ClickHouse resource
+        target_date: Target date for calculation (from partition)
 
+    Returns:
+        DataFrame with calculated weighted composite series data
+
+    Raises:
+        MetaSeriesNotFoundError: If derived series not found
+        CalculationError: If calculation fails
+    """
     meta_manager = MetaSeriesManager(clickhouse)
     dep_manager = DependencyManager(clickhouse)
     calc_manager = CalculationLogManager(clickhouse)
@@ -216,8 +164,14 @@ def calculate_weighted_composite(
         meta_manager, config.derived_series_code, context, raise_if_not_found=True
     )
 
+    # get_or_validate_meta_series with raise_if_not_found=True should never return None
+    if derived_series is None:
+        raise MetaSeriesNotFoundError(f"Derived series {config.derived_series_code} not found")
+
+    derived_series_id = derived_series["series_id"]
+
     # Get parent dependencies with weights
-    parent_deps = dep_manager.get_parent_dependencies(derived_series["series_id"])
+    parent_deps = dep_manager.get_parent_dependencies(derived_series_id)
 
     if len(parent_deps) < 2:
         raise CalculationError("Weighted composite requires at least 2 parent series")
@@ -226,7 +180,7 @@ def calculate_weighted_composite(
     input_series_ids = [dep["parent_series_id"] for dep in parent_deps]
     calc_id = create_calculation_log(
         calc_manager,
-        derived_series["series_id"],
+        derived_series_id,
         CALCULATION_TYPES["WEIGHTED_COMPOSITE"],
         config.formula,
         input_series_ids,
@@ -251,11 +205,11 @@ def calculate_weighted_composite(
             raise CalculationError("No parent data found")
 
         # Merge all series on timestamp
-        all_timestamps = set[Any]()
+        all_timestamps_set: set[Any] = set()
         for data in parent_data.values():
-            all_timestamps.update(data["data"]["timestamp"].tolist())
+            all_timestamps_set.update(data["data"]["timestamp"].tolist())
 
-        all_timestamps = sorted(all_timestamps)
+        all_timestamps = sorted(all_timestamps_set)
         result_df = pd.DataFrame({"timestamp": all_timestamps})
 
         # Calculate weighted sum
@@ -269,7 +223,7 @@ def calculate_weighted_composite(
         # Prepare output
         output_df = pd.DataFrame(
             {
-                "series_id": [derived_series["series_id"]] * len(result_df),
+                "series_id": [derived_series_id] * len(result_df),
                 "timestamp": result_df["timestamp"],
                 "value": result_df["value"],
             }

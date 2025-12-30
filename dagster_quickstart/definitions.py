@@ -13,21 +13,23 @@ from dagster_polars import PolarsParquetIOManager
 from decouple import config
 
 from dagster_clickhouse.io_manager import clickhouse_io_manager
-
-# from dagster_clickhouse.pypdl_resource import PyPDLResource
-from dagster_clickhouse.resources import ClickHouseResource
-from dagster_quickstart.assets import calculations, csv_loader, ingestion
+from dagster_quickstart.assets import (
+    calculations,
+    csv_loader,
+    hackernews,
+    ingestion,
+)
 from dagster_quickstart.notifications.email_sensors import (
     outlook_email_on_run_failure,
-)
-from dagster_quickstart.notifications.outlook_email_resource import (
-    OutlookEmailResource,
 )
 from dagster_quickstart.notifications.teams_messages import (
     failure_message_fn,
 )
 
-all_assets = load_assets_from_modules([ingestion, calculations, csv_loader])
+# from dagster_quickstart.resources import PyPDLResource
+from dagster_quickstart.resources import ClickHouseResource, OutlookEmailResource
+
+all_assets = load_assets_from_modules([ingestion, calculations, csv_loader, hackernews])
 
 # Define resources
 # ClickHouseResource is a ConfigurableResource, so we can instantiate it directly

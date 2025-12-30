@@ -1,3 +1,15 @@
-from . import assets, calculations, csv_loader, ingestion
+from . import (
+    bloomberg_ingestion,
+    calculations,
+    csv_loader,
+    hackernews,
+    ingestion,
+)
 
-__all__ = ["assets", "ingestion", "calculations", "csv_loader"]
+__all__ = [
+    "bloomberg_ingestion",
+    "calculations",
+    "csv_loader",
+    "hackernews",
+    "ingestion",
+]

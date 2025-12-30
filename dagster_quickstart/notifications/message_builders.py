@@ -22,9 +22,10 @@ def _load_templates() -> dict:
     Raises:
         FileNotFoundError: If template file is not found
     """
-    # Get the directory where this file is located
-    current_dir = Path(__file__).parent
-    template_path = current_dir / "teams_templates.yaml"
+    # Get the templates directory (sibling to notifications folder)
+    current_file = Path(__file__)
+    templates_dir = current_file.parent.parent / "templates"
+    template_path = templates_dir / "teams_templates.yaml"
 
     if not template_path.exists():
         raise FileNotFoundError(f"Template file not found: {template_path}")
@@ -235,4 +236,3 @@ def build_success_message(
         )
         # Re-raise to let notification handler deal with the error
         raise
-

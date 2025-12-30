@@ -2,7 +2,7 @@
 
 from typing import Any, Dict, Optional
 
-from dagster_clickhouse.resources import ClickHouseResource
+from dagster_quickstart.resources import ClickHouseResource
 from dagster_quickstart.utils.constants import DB_COLUMNS, DB_TABLES
 from dagster_quickstart.utils.datetime_utils import utc_now_metadata
 from dagster_quickstart.utils.exceptions import DatabaseError

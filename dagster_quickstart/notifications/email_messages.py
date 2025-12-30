@@ -40,4 +40,3 @@ def success_message_fn(context: RunStatusSensorContext) -> str:
         Exception: If message generation fails, logs the error and re-raises
     """
     return build_success_message(context, format_type="email")
-

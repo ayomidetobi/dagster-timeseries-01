@@ -27,7 +27,7 @@ The `ClickHouseResource` class (in `dagster_clickhouse/resources.py`) provides:
 ### Usage Example
 
 ```python
-from dagster_clickhouse.resources import ClickHouseResource
+from dagster_quickstart.resources import ClickHouseResource
 
 clickhouse = ClickHouseResource.from_config()
 
