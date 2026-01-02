@@ -6,4 +6,4 @@ from dagster import Config
 class IngestionConfig(Config):
     """Configuration for data ingestion."""
 
-    force_refresh: bool = False  # If True, delete existing data for the partition date before inserting (ensures idempotency when re-running a partition). If False, skip insertion if data already exists for the date.
+    force_refresh: bool = True  # If True, delete existing data for the partition date before inserting (ensures idempotency when re-running a partition). If False, skip insertion if data already exists for the date.

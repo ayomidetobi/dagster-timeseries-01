@@ -10,7 +10,9 @@ from dagster_quickstart.utils.constants import (
     CODE_BASED_LOOKUPS,
     DB_COLUMNS,
     DB_TABLES,
+    LOOKUP_TABLE_COLUMNS,
     LOOKUP_TABLE_PROCESSING_ORDER,
+    META_SERIES_STAGING_COLUMNS,
     NULL_VALUE_REPRESENTATION,
 )
 from dagster_quickstart.utils.exceptions import CSVValidationError
@@ -82,67 +84,36 @@ def process_staging_to_meta_series(
     context.log.info("Processing meta series from staging to metaSeries using SQL")
 
     # Step 1: Load CSV into staging table
-    staging_columns = [
-        "series_name",
-        "series_code",
-        "data_source",
-        "field_type",
-        "asset_class",
-        "sub_asset_class",
-        "product_type",
-        "data_type",
-        "structure_type",
-        "market_segment",
-        "ticker_source",
-        "ticker",
-        "region",
-        "currency",
-        "term",
-        "tenor",
-        "country",
-        "valid_from",
-        "valid_to",
-        "calculation_formula",
-        "description",
-        "is_active",
-    ]
-    load_csv_to_staging_table(context, clickhouse, df, "staging_meta_series", staging_columns)
+    load_csv_to_staging_table(
+        context, clickhouse, df, "staging_meta_series", META_SERIES_STAGING_COLUMNS
+    )
 
     # Step 1.5: Validate referential integrity before insertion
     context.log.info("Validating referential integrity for meta series references")
     validator = ReferentialIntegrityValidator(clickhouse)
 
     # Fetch staging data for validation
-    query = """
-    SELECT series_code, field_type, asset_class, sub_asset_class, product_type,
-           data_type, structure_type, market_segment, ticker_source,
-           region, currency, term, tenor, country
+    # Build columns list: series_code + all lookup types from constants
+    validation_columns = ["series_code"] + list(LOOKUP_TABLE_PROCESSING_ORDER)
+    columns_str = ", ".join(validation_columns)
+
+    query = f"""
+    SELECT {columns_str}
     FROM staging_meta_series
     WHERE series_code IS NOT NULL AND series_code != ''
     """
     result = clickhouse.execute_query(query)
     staging_data = []
     if hasattr(result, "result_rows") and result.result_rows:
-        columns = [
-            "series_code",
-            "field_type",
-            "asset_class",
-            "sub_asset_class",
-            "product_type",
-            "data_type",
-            "structure_type",
-            "market_segment",
-            "ticker_source",
-            "region",
-            "currency",
-            "term",
-            "tenor",
-            "country",
-        ]
         for row in result.result_rows:
-            staging_data.append(dict(zip(columns, row)))
+            staging_data.append(dict(zip(validation_columns, row)))
 
-    validator.validate_meta_series_references(context, staging_data)
+    # Validate referential integrity - this will raise InvalidLookupReferenceError if validation fails
+    try:
+        validator.validate_meta_series_references(context, staging_data)
+    except Exception as e:
+        context.log.error(f"Referential integrity validation failed: {e}")
+        raise
 
     # Step 2: Insert into metaSeries using SQL with LEFT JOIN-based ID resolution
     # Resolve all lookup name values to IDs using LEFT JOINs with lookup tables
@@ -230,27 +201,12 @@ def process_staging_to_dimensions(
     Returns:
         Dictionary mapping lookup_type -> {name: id}
     """
-    from dagster_quickstart.utils.constants import LOOKUP_TABLE_COLUMNS
-
     context.log.info("Processing lookup tables from staging to dimensions using SQL")
 
     # Step 1: Load CSV into staging table
-    staging_columns = [
-        "asset_class",
-        "product_type",
-        "sub_asset_class",
-        "data_type",
-        "structure_type",
-        "market_segment",
-        "field_type",
-        "ticker_source",
-        "country",
-        "currency",
-        "region",
-        "term",
-        "tenor",
-    ]
-    load_csv_to_staging_table(context, clickhouse, df, "staging_lookup_tables", staging_columns)
+    load_csv_to_staging_table(
+        context, clickhouse, df, "staging_lookup_tables", LOOKUP_TABLE_COLUMNS
+    )
 
     all_results: Dict[str, Dict[str, int]] = {}
     available_columns = [col for col in LOOKUP_TABLE_COLUMNS if col in df.columns]

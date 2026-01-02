@@ -1,16 +1,18 @@
 """Data ingestion logic for multiple data sources."""
 
+import random
 from datetime import datetime
-from typing import Any, Dict
+from typing import Dict, Optional
 
 import polars as pl
 from dagster import AssetExecutionContext, MetadataValue
 
 from dagster_quickstart.resources import ClickHouseResource
 from dagster_quickstart.utils.exceptions import DatabaseError
+from dagster_quickstart.utils.helpers import round_six_dp
 from database.lookup_tables import LookupTableManager
 from database.meta_series import MetaSeriesManager
-from database.models import TickerSource
+from database.models import TickerSource, TimeSeriesValue
 from database.value_data import ValueDataManager
 
 from .config import IngestionConfig
@@ -62,23 +64,20 @@ def ingest_data_for_ticker_source(
         ticker_source_lookup.get("ticker_source_id") if ticker_source_lookup else None
     )
 
-    def is_matching_series(series: Dict[str, Any]) -> bool:
-        """Check if a series uses the specified ticker source.
+    if not ticker_source_id:
+        context.log.warning("Ticker source %s not found in lookup table", ticker_source.value)
+        return pl.DataFrame(
+            {
+                "total_series": [0],
+                "successful_ingestions": [0],
+                "failed_ingestions": [0],
+                "total_rows_inserted": [0],
+                "target_date": [target_date.isoformat()],
+            }
+        )
 
-        Args:
-            series: Series dictionary with ticker_source_id
-
-        Returns:
-            True if series uses the specified ticker source
-        """
-        series_ticker_source_id = series.get("ticker_source_id")
-        # Both ticker_source_id (from lookup) and series_ticker_source_id must exist
-        if not ticker_source_id or not series_ticker_source_id:
-            return False
-        return series_ticker_source_id == ticker_source_id
-
-    # Filter series by ticker source
-    matching_series = [series for series in active_series if is_matching_series(series)]
+    # 1. Get matching series
+    matching_series = [s for s in active_series if s.get("ticker_source_id") == ticker_source_id]
     context.log.info(
         "Found %d %s series to ingest",
         len(matching_series),
@@ -98,95 +97,124 @@ def ingest_data_for_ticker_source(
             }
         )
 
-    total_rows_inserted = 0
-    successful_series = []
-    failed_series = []
+    # 2. Fetch latest timestamps in bulk
+    latest_timestamps: Dict[int, Optional[datetime]] = {}
+    if not config.force_refresh:
+        series_ids = [s["series_id"] for s in matching_series]
+        latest_timestamps = value_manager.get_latest_timestamps_for_series(series_ids)
+        skipped_count = 0
+        for s in matching_series:
+            latest_ts = latest_timestamps.get(s["series_id"])
+            if latest_ts is not None and latest_ts.date() >= target_date.date():
+                skipped_count += 1
+        if skipped_count > 0:
+            context.log.info(
+                "Skipping %d series with existing data for target date",
+                skipped_count,
+                extra={"skipped_count": skipped_count},
+            )
 
-    # Process each series
+    # 3. Accumulate validated rows
+    all_validated_data = []
+    successful_series = []
+    validation_errors = []
+
     for series in matching_series:
         series_id = series["series_id"]
         series_code = series.get("series_code", f"series_{series_id}")
 
         try:
-            # Check if we should skip (if data already exists and not forcing refresh)
+            # Skip if data already exists and not forcing refresh
             if not config.force_refresh:
-                latest_timestamp = value_manager.get_latest_timestamp(series_id)
+                latest_timestamp = latest_timestamps.get(series_id)
                 if latest_timestamp and latest_timestamp.date() >= target_date.date():
-                    context.log.info(
-                        "Data already exists, skipping",
-                        extra={
-                            "series_id": series_id,
-                            "series_code": series_code,
-                            "target_date": target_date.date().isoformat(),
-                            "latest_timestamp": latest_timestamp.date().isoformat(),
-                        },
-                    )
                     continue
 
             # In a real implementation, this would connect to the data source API
             # For now, we'll simulate with sample data for the partition date
             # TODO: Replace with actual API integration
-            value_data = [
+
+            # Generate random positive value between 1.0 and 1000.0
+            raw_value = random.uniform(1.0, 1000.0)
+            raw_value_data = [
                 {
                     "series_id": series_id,
                     "timestamp": target_date,
-                    "value": 100.0,  # Sample value - replace with actual data
+                    "value": round_six_dp(raw_value),  # Round to 6 decimal places for consistency
                 }
             ]
 
-            # Insert data using idempotent insert
-            rows_inserted = value_manager.insert_batch_value_data(
-                value_data,
-                delete_before_insert=config.force_refresh,
-                partition_date=target_date,
-            )
-
-            total_rows_inserted += rows_inserted
+            # Validate value data using TimeSeriesValue model
+            validated_value_data = [
+                {
+                    "series_id": v.series_id,
+                    "timestamp": v.timestamp,
+                    "value": float(v.value),  # Convert Decimal to float for database
+                }
+                for v in [TimeSeriesValue(**item) for item in raw_value_data]
+            ]
+            all_validated_data.extend(validated_value_data)
             successful_series.append(
                 {
                     "series_id": series_id,
                     "series_code": series_code,
-                    "rows": rows_inserted,
+                    "rows": len(validated_value_data),
                 }
             )
-            context.log.info(
-                "Inserted %d rows for %s (series_id: %d)",
-                rows_inserted,
-                series_code,
-                series_id,
+
+        except Exception as validation_error:
+            error_msg = f"Validation failed for series {series_code} (series_id: {series_id}): {validation_error}"
+            context.log.error(
+                "Validation failed for value data: %s",
+                validation_error,
                 extra={
                     "series_id": series_id,
                     "series_code": series_code,
-                    "rows_inserted": rows_inserted,
+                    "validation_error": str(validation_error),
                 },
             )
+            validation_errors.append(error_msg)
 
+    # Raise exception if there are validation errors to mark asset as failed
+    if validation_errors:
+        error_summary = f"Validation failed for {len(validation_errors)} series(s): " + "; ".join(
+            validation_errors
+        )
+        context.log.error(error_summary)
+        raise ValueError(error_summary)
+
+    # 4. Batch insert all series at once
+    total_rows_inserted = 0
+    if all_validated_data:
+        try:
+            rows_inserted = value_manager.insert_batch_value_data(
+                all_validated_data,
+                delete_before_insert=config.force_refresh,
+                partition_date=target_date,
+            )
+            total_rows_inserted = rows_inserted
+            context.log.info(
+                "Batch inserted %d rows for %d series",
+                total_rows_inserted,
+                len(successful_series),
+                extra={
+                    "total_rows": total_rows_inserted,
+                    "successful_series_count": len(successful_series),
+                },
+            )
         except (DatabaseError, ValueError, TypeError) as e:
             context.log.error(
-                "Error inserting data for %s: %s",
-                series_code,
+                "Error during batch insert: %s",
                 e,
-                extra={"series_id": series_id, "series_code": series_code, "error": str(e)},
+                extra={"error": str(e), "total_rows_attempted": len(all_validated_data)},
             )
-            failed_series.append(
-                {"series_id": series_id, "series_code": series_code, "reason": str(e)}
-            )
-        except Exception as e:
-            context.log.error(
-                "Unexpected error inserting data for %s: %s",
-                series_code,
-                e,
-                extra={"series_id": series_id, "series_code": series_code, "error": str(e)},
-            )
-            failed_series.append(
-                {
-                    "series_id": series_id,
-                    "series_code": series_code,
-                    "reason": f"Unexpected error: {e}",
-                }
-            )
+            # Re-raise to mark asset as failed
+            raise DatabaseError(
+                f"Batch insert failed for {len(successful_series)} series(s): {e}"
+            ) from e
 
     # Create summary DataFrame
+    failed_series: list = []  # Only populated if batch insert fails (which would raise)
     summary_data = {
         "total_series": [len(matching_series)],
         "successful_ingestions": [len(successful_series)],

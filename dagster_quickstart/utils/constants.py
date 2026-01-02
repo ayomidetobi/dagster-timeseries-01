@@ -1,23 +1,7 @@
 """Constants used across Dagster assets."""
 
-# Lookup table column names
-LOOKUP_TABLE_COLUMNS = [
-    "asset_class",
-    "product_type",
-    "sub_asset_class",
-    "data_type",
-    "structure_type",
-    "market_segment",
-    "field_type",
-    "ticker_source",
-    "region",
-    "currency",
-    "term",
-    "tenor",
-    "country",
-]
-
 # Processing order for lookup tables (all independent now)
+# This is the source of truth for lookup table types and their processing order
 LOOKUP_TABLE_PROCESSING_ORDER = [
     "asset_class",
     "product_type",
@@ -34,13 +18,35 @@ LOOKUP_TABLE_PROCESSING_ORDER = [
     "country",
 ]
 
-# Required columns for meta series CSV
+# Lookup table column names (derived from processing order)
+# Used for CSV column validation - same items as processing order, can be in any order
+LOOKUP_TABLE_COLUMNS = list(LOOKUP_TABLE_PROCESSING_ORDER)
+
+# Meta series specific columns (non-lookup fields)
+# This is the source of truth for all meta series fields
+META_SERIES_SPECIFIC_COLUMNS = [
+    "series_name",
+    "series_code",
+    "data_source",
+    "ticker",
+    "valid_from",
+    "valid_to",
+    "calculation_formula",
+    "description",
+    "is_active",
+]
+
+# Required columns for meta series CSV (derived from specific columns)
+# These are the minimum required fields for meta series
 META_SERIES_REQUIRED_COLUMNS = [
     "series_name",
     "series_code",
     "data_source",
     "ticker",
 ]
+
+# Staging columns for meta series (meta series fields + all lookup types)
+META_SERIES_STAGING_COLUMNS = META_SERIES_SPECIFIC_COLUMNS + LOOKUP_TABLE_PROCESSING_ORDER
 
 # Required columns for series dependencies CSV
 SERIES_DEPENDENCIES_REQUIRED_COLUMNS = [

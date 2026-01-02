@@ -1,12 +1,41 @@
 """Referential integrity validation for meta series and lookup table references."""
 
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Set
 
 from dagster import AssetExecutionContext
 
 from dagster_quickstart.resources import ClickHouseResource
-from dagster_quickstart.utils.constants import DB_COLUMNS, DB_TABLES
+from dagster_quickstart.utils.constants import (
+    CODE_BASED_LOOKUPS,
+    DB_COLUMNS,
+    DB_TABLES,
+    LOOKUP_TABLE_PROCESSING_ORDER,
+)
 from dagster_quickstart.utils.exceptions import InvalidLookupReferenceError
+
+
+@dataclass
+class LookupValidationError:
+    """Structured error record for a single invalid lookup reference."""
+
+    lookup_type: str
+    lookup_value: str
+    series_code: str
+
+    def to_exception(self) -> InvalidLookupReferenceError:
+        """Convert to InvalidLookupReferenceError exception."""
+        return InvalidLookupReferenceError(
+            lookup_type=self.lookup_type,
+            lookup_value=self.lookup_value,
+            series_code=self.series_code,
+        )
+
+    def __str__(self) -> str:
+        """String representation for error messages."""
+        if self.series_code:
+            return f"Series '{self.series_code}' references invalid {self.lookup_type} '{self.lookup_value}'"
+        return f"Invalid {self.lookup_type} reference: '{self.lookup_value}'"
 
 
 class ReferentialIntegrityValidator:
@@ -25,6 +54,24 @@ class ReferentialIntegrityValidator:
         self.clickhouse = clickhouse
         self._lookup_cache: Dict[str, Set[str]] = {}
 
+    def _get_query_field(self, lookup_type: str) -> str:
+        """Determine which database column to query for a given lookup type.
+
+        Args:
+            lookup_type: Type of lookup (e.g., "asset_class", "field_type")
+
+        Returns:
+            Name of the database column to query for validation
+        """
+        if lookup_type in CODE_BASED_LOOKUPS:
+            # For code-based lookups, use the check_field (which field is used for validation)
+            _, _, check_field = CODE_BASED_LOOKUPS[lookup_type]
+            return check_field
+
+        # For simple lookups, use the name column
+        _, name_column = DB_COLUMNS[lookup_type]
+        return name_column
+
     def _get_lookup_values(self, lookup_type: str) -> Set[str]:
         """Get all valid lookup values for a given lookup type.
 
@@ -38,24 +85,12 @@ class ReferentialIntegrityValidator:
             return self._lookup_cache[lookup_type]
 
         table_name = DB_TABLES[lookup_type]
-        _, name_column = DB_COLUMNS[lookup_type]
+        query_field = self._get_query_field(lookup_type)
 
-        # For code-based lookups, we need to get the code field
-        if lookup_type in ["currency", "tenor", "country"]:
-            code_field_map = {
-                "currency": "currency_code",
-                "tenor": "tenor_code",
-                "country": "country_code",
-            }
-            query_field = code_field_map[lookup_type]
-        elif lookup_type == "ticker_source":
-            # ticker_source uses ticker_source_name for lookup
-            query_field = name_column
-        else:
-            # All other lookups use the name column
-            query_field = name_column
-
-        query = f"SELECT DISTINCT {query_field} FROM {table_name} WHERE {query_field} IS NOT NULL AND {query_field} != ''"
+        query = (
+            f"SELECT DISTINCT {query_field} FROM {table_name} "
+            f"WHERE {query_field} IS NOT NULL AND {query_field} != ''"
+        )
         result = self.clickhouse.execute_query(query)
 
         values: Set[str] = set()
@@ -69,7 +104,7 @@ class ReferentialIntegrityValidator:
 
     def validate_lookup_reference(
         self, lookup_type: str, lookup_value: str, series_code: str = ""
-    ) -> None:
+    ) -> Optional[LookupValidationError]:
         """Validate that a lookup value exists in its lookup table.
 
         Args:
@@ -77,19 +112,23 @@ class ReferentialIntegrityValidator:
             lookup_value: The lookup value to validate
             series_code: Optional series code for error messages
 
-        Raises:
-            InvalidLookupReferenceError: If the lookup value does not exist
+        Returns:
+            LookupValidationError if validation fails, None if valid
         """
         if not lookup_value or lookup_value.strip() == "":
-            return  # NULL/empty values are allowed
+            return None  # NULL/empty values are allowed
 
         valid_values = self._get_lookup_values(lookup_type)
-        if lookup_value.strip() not in valid_values:
-            raise InvalidLookupReferenceError(
+        lookup_value_clean = lookup_value.strip()
+
+        if lookup_value_clean not in valid_values:
+            return LookupValidationError(
                 lookup_type=lookup_type,
-                lookup_value=lookup_value,
+                lookup_value=lookup_value_clean,
                 series_code=series_code,
             )
+
+        return None
 
     def validate_meta_series_references(
         self,
@@ -108,49 +147,36 @@ class ReferentialIntegrityValidator:
         """
         context.log.info("Validating referential integrity for meta series references")
 
-        errors: List[str] = []
-        lookup_types = [
-            "field_type",
-            "asset_class",
-            "product_type",
-            "data_type",
-            "structure_type",
-            "market_segment",
-            "ticker_source",
-            "sub_asset_class",
-            "region",
-            "currency",
-            "term",
-            "tenor",
-            "country",
-        ]
+        errors: List[LookupValidationError] = []
 
+        # Use LOOKUP_TABLE_PROCESSING_ORDER from constants instead of hard-coding
         for row in staging_data:
-            series_code = row.get("series_code", "")
+            series_code = str(row.get("series_code", "") or "")
 
-            # Validate all lookup references (sub_asset_class is now independent)
-            for lookup_type in lookup_types:
+            # Validate all lookup references using the processing order from constants
+            for lookup_type in LOOKUP_TABLE_PROCESSING_ORDER:
                 lookup_value = row.get(lookup_type)
                 if lookup_value is not None:
                     lookup_value_str = str(lookup_value).strip()
                     if lookup_value_str:
-                        try:
-                            self.validate_lookup_reference(
-                                lookup_type, lookup_value_str, series_code
-                            )
-                        except InvalidLookupReferenceError as e:
-                            errors.append(str(e))
+                        error = self.validate_lookup_reference(
+                            lookup_type, lookup_value_str, series_code
+                        )
+                        if error:
+                            errors.append(error)
 
         if errors:
+            # Build aggregated error message from structured error records
             error_message = (
                 f"Referential integrity validation failed with {len(errors)} error(s):\n"
             )
-            error_message += "\n".join(
-                f"  - {error}" for error in errors[:20]
-            )  # Limit to 20 errors
+            error_message += "\n".join(f"  - {error}" for error in errors[:20])
             if len(errors) > 20:
                 error_message += f"\n  ... and {len(errors) - 20} more error(s)"
+
             context.log.error(error_message)
+
+            # Raise a single aggregated exception with details
             raise InvalidLookupReferenceError(
                 lookup_type="multiple",
                 lookup_value="",

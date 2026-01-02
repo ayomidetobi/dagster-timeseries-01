@@ -258,6 +258,44 @@ class ValueDataManager:
             return result.result_rows[0][0]
         return None
 
+    def get_latest_timestamps_for_series(
+        self, series_ids: List[int]
+    ) -> Dict[int, Optional[datetime]]:
+        """Get the latest timestamp for multiple series in a single query.
+
+        Args:
+            series_ids: List of series IDs
+
+        Returns:
+            Dictionary mapping series_id to latest timestamp (or None if no data exists)
+        """
+        if not series_ids:
+            return {}
+
+        # Build query with IN clause for multiple series_ids
+        query = f"""
+        SELECT series_id, max(timestamp) as latest_timestamp
+        FROM {VALUE_DATA_TABLE}
+        WHERE series_id IN ({{series_ids:Array(UInt32)}})
+        GROUP BY series_id
+        """
+        result = self.clickhouse.execute_query(query, parameters={"series_ids": series_ids})
+
+        # Build dictionary from results
+        timestamps_map: Dict[int, Optional[datetime]] = {}
+        if hasattr(result, "result_rows") and result.result_rows:
+            for row in result.result_rows:
+                series_id = int(row[0])
+                latest_timestamp = row[1] if row[1] else None
+                timestamps_map[series_id] = latest_timestamp
+
+        # Ensure all requested series_ids are in the result (with None if no data)
+        for series_id in series_ids:
+            if series_id not in timestamps_map:
+                timestamps_map[series_id] = None
+
+        return timestamps_map
+
     def delete_partition_data(
         self,
         series_id: int,

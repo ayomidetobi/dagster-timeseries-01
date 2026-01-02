@@ -30,7 +30,6 @@ from dagster_quickstart.notifications.teams_messages import (
 # from dagster_quickstart.resources import PyPDLResource
 from dagster_quickstart.resources import (
     ClickHouseResource,
-    GreatExpectationsResource,
     OutlookEmailResource,
 )
 
@@ -49,7 +48,6 @@ resources = {
     "polars_parquet_io_manager": PolarsParquetIOManager(base_dir="data/parquet"),
     "msteams": MSTeamsResource(hook_url=config("TEAMS_WEBHOOK_URL")),
     "outlook_email": OutlookEmailResource.from_config(),
-    "great_expectations": GreatExpectationsResource(),
 }
 # Define jobs
 ingestion_job = define_asset_job(
