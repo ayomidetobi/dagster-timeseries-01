@@ -1,922 +1,30 @@
 """CSV loading logic for lookup tables and meta series with validation."""
 
-from typing import Any, Callable, Dict, Optional, Set
+from typing import Dict
 
 import polars as pl
 from dagster import AssetExecutionContext
 
 from dagster_quickstart.resources import ClickHouseResource
 from dagster_quickstart.utils.constants import (
+    DB_COLUMNS,
+    DB_TABLES,
     LOOKUP_TABLE_PROCESSING_ORDER,
     META_SERIES_REQUIRED_COLUMNS,
     NULL_VALUE_REPRESENTATION,
 )
-from dagster_quickstart.utils.exceptions import (
-    CSVValidationError,
-    DataSourceValidationError,
-    MetaSeriesNotFoundError,
-)
-from dagster_quickstart.utils.helpers import (
-    is_empty_row,
-    parse_data_source,
-    read_csv_safe,
-    resolve_lookup_id_from_string,
-    safe_int,
-    validate_csv_columns,
-)
-from database.lookup_tables import LookupTableManager
-from database.meta_series import MetaSeriesManager
-from database.models import (
-    AssetClassLookup,
-    CountryLookup,
-    CurrencyLookup,
-    DataTypeLookup,
-    FieldTypeLookup,
-    MarketSegmentLookup,
-    MetaSeriesCreate,
-    ProductTypeLookup,
-    RegionLookup,
-    StructureTypeLookup,
-    SubAssetClassLookup,
-    TenorLookup,
-    TermLookup,
-    TickerSourceLookup,
-)
+from dagster_quickstart.utils.exceptions import CSVValidationError
+from dagster_quickstart.utils.helpers import read_csv_safe, validate_csv_columns
 
-from .config import LookupTableCSVConfig, MetaSeriesCSVConfig
-
-
-def load_allowed_names(csv_path: str, lookup_table_type: str) -> Set[str]:
-    """Load allowed names from CSV file.
-
-    Supports two formats:
-    1. Wide format: Columns are lookup table types (asset_class, product_type, etc.)
-    2. Long format: Has lookup_table_type and name columns
-    """
-    try:
-        # Read CSV with truncate_ragged_lines to handle trailing commas
-        df = pl.read_csv(csv_path, truncate_ragged_lines=True)
-
-        # Check if this is wide format (columns are lookup table types)
-        column_name = lookup_table_type.replace("_", "_")  # Keep as is
-        if column_name in df.columns:
-            # Wide format: extract unique values from the column
-            values = df[column_name].drop_nulls().unique().to_list()
-            return set[str](str(v).strip() for v in values if v and str(v).strip() != "")
-
-        # Long format: has lookup_table_type and name columns
-        if "name" in df.columns:
-            if "lookup_table_type" in df.columns:
-                df = df.filter(pl.col("lookup_table_type") == lookup_table_type)
-            return set[str](df["name"].unique().to_list())
-
-        raise ValueError(
-            f"CSV file {csv_path} must have either '{column_name}' column "
-            f"(wide format) or 'name' column (long format)"
-        )
-    except Exception as e:
-        raise CSVValidationError(f"Error loading allowed names from {csv_path}: {e}") from e
-
-
-def validate_lookup_name(name: str, allowed_names: Set[str], lookup_type: str) -> None:
-    """Validate that a lookup name is in the allowed list."""
-    if name not in allowed_names:
-        raise ValueError(
-            f"Name '{name}' is not in the allowed list for {lookup_type}. "
-            f"Allowed names: {sorted(allowed_names)}"
-        )
-
-
-def process_simple_lookup_type(
-    context: AssetExecutionContext,
-    lookup_manager: LookupTableManager,
-    lookup_type: str,
-    values: list,
-    allowed_names: Set[str],
-    lookup_factory: Callable[[str, Optional[str]], Any],
-    insert_method: Callable[[Any], int],
-    get_by_name_method: Callable[[str], Optional[Dict[str, Any]]],
-    id_field_name: str,
-) -> Dict[str, int]:
-    """Process a simple lookup type (no dependencies, no special code generation).
-
-    Args:
-        context: Dagster execution context
-        lookup_manager: Lookup table manager instance
-        lookup_type: Type of lookup table (e.g., "data_type")
-        values: List of values to process
-        allowed_names: Set of allowed names for validation
-        lookup_factory: Function to create lookup object (name, description) -> Lookup
-        insert_method: Method to insert lookup (lookup) -> int
-        get_by_name_method: Method to get existing lookup by name (name) -> Optional[Dict]
-        id_field_name: Name of the ID field in the returned dict (e.g., "data_type_id")
-
-    Returns:
-        Dictionary mapping name to lookup_id
-    """
-    results = {}
-    for name_value in values:
-        if not name_value or str(name_value).strip() == "":
-            continue
-        name = str(name_value).strip()
-        validate_lookup_name(name, allowed_names, lookup_type)
-
-        try:
-            existing = get_by_name_method(name)
-            if existing:
-                context.log.info(f"{lookup_type} '{name}' already exists, using existing ID")
-                results[name] = existing[id_field_name]
-            else:
-                lookup_obj = lookup_factory(name, None)
-                lookup_id = insert_method(lookup_obj)
-                results[name] = lookup_id
-        except Exception as e:
-            context.log.error(f"Error processing {lookup_type} {name}: {e}")
-            raise
-    return results
-
-
-def process_asset_class_lookup(
-    context: AssetExecutionContext,
-    lookup_manager: LookupTableManager,
-    values: list,
-    allowed_names: Set[str],
-) -> Dict[str, int]:
-    """Process asset_class lookup type (returns mapping for sub_asset_class).
-
-    Returns:
-        Dictionary mapping asset_class name to asset_class_id
-    """
-    asset_class_mapping = {}
-    for name_value in values:
-        if not name_value or str(name_value).strip() == "":
-            continue
-        name = str(name_value).strip()
-        validate_lookup_name(name, allowed_names, "asset_class")
-
-        try:
-            asset_lookup = AssetClassLookup(name=name, description=None)
-            existing = lookup_manager.get_asset_class_by_name(name)
-            if not existing:
-                lookup_id = lookup_manager.insert_asset_class(asset_lookup)
-                asset_class_mapping[name] = lookup_id
-            else:
-                asset_class_mapping[name] = existing["asset_class_id"]
-        except Exception as e:
-            context.log.error(f"Error processing asset_class {name}: {e}")
-            raise
-    return asset_class_mapping
-
-
-def process_code_based_lookup_type(
-    context: AssetExecutionContext,
-    lookup_manager: LookupTableManager,
-    lookup_type: str,
-    values: list,
-    allowed_names: Set[str],
-    lookup_factory: Callable[[str, Optional[str], str], Any],
-    insert_method: Callable[[Any], int],
-    get_by_name_method: Callable[[str], Optional[Dict[str, Any]]],
-    id_field_name: str,
-) -> Dict[str, int]:
-    """Process lookup type that requires code generation (field_type, ticker_source).
-
-    Args:
-        context: Dagster execution context
-        lookup_manager: Lookup table manager instance
-        lookup_type: Type of lookup table
-        values: List of values to process
-        allowed_names: Set of allowed names for validation
-        lookup_factory: Function to create lookup object (name, description, code) -> Lookup
-        insert_method: Method to insert lookup (lookup) -> int
-        get_by_name_method: Method to get existing lookup by name (name) -> Optional[Dict]
-        id_field_name: Name of the ID field in the returned dict (e.g., "field_type_id")
-
-    Returns:
-        Dictionary mapping name to lookup_id
-    """
-    results = {}
-    for name_value in values:
-        if not name_value or str(name_value).strip() == "":
-            continue
-        name = str(name_value).strip()
-        validate_lookup_name(name, allowed_names, lookup_type)
-
-        try:
-            existing = get_by_name_method(name)
-            if existing:
-                context.log.info(f"{lookup_type} '{name}' already exists, using existing ID")
-                results[name] = existing[id_field_name]
-            else:
-                code = name.upper().replace(" ", "_")
-                lookup_obj = lookup_factory(name, None, code)
-                lookup_id = insert_method(lookup_obj)
-                results[name] = lookup_id
-        except Exception as e:
-            context.log.error(f"Error processing {lookup_type} {name}: {e}")
-            raise
-    return results
-
-
-def process_product_type_lookup(
-    context: AssetExecutionContext,
-    lookup_manager: LookupTableManager,
-    values: list,
-    allowed_names: Set[str],
-) -> Dict[str, int]:
-    """Process product_type lookup (has is_derived flag)."""
-    results = {}
-    for name_value in values:
-        if not name_value or str(name_value).strip() == "":
-            continue
-        name = str(name_value).strip()
-        validate_lookup_name(name, allowed_names, "product_type")
-
-        try:
-            existing = lookup_manager.get_product_type_by_name(name)
-            if existing:
-                context.log.info(f"product_type '{name}' already exists, using existing ID")
-                results[name] = existing["product_type_id"]
-            else:
-                product_lookup = ProductTypeLookup(name=name, description=None, is_derived=False)
-                lookup_id = lookup_manager.insert_product_type(product_lookup)
-                results[name] = lookup_id
-        except Exception as e:
-            context.log.error(f"Error processing product_type {name}: {e}")
-            raise
-    return results
-
-
-def process_sub_asset_class_lookup(
-    context: AssetExecutionContext,
-    lookup_manager: LookupTableManager,
-    df: pl.DataFrame,
-    allowed_names: Set[str],
-    asset_class_mapping: Dict[str, int],
-) -> Dict[str, int]:
-    """Process sub_asset_class lookup (requires asset_class mapping)."""
-    results = {}
-    for row in df.filter(pl.col("sub_asset_class").is_not_null()).iter_rows(named=True):
-        sub_name = str(row["sub_asset_class"]).strip()
-        asset_name = str(row.get("asset_class", "")).strip()
-
-        if not sub_name or sub_name == "":
-            continue
-
-        validate_lookup_name(sub_name, allowed_names, "sub_asset_class")
-
-        if not asset_name or asset_name not in asset_class_mapping:
-            context.log.warning(
-                f"Skipping sub_asset_class '{sub_name}' - asset_class '{asset_name}' not found"
-            )
-            continue
-
-        try:
-            existing = lookup_manager.get_sub_asset_class_by_name(sub_name)
-            if existing:
-                context.log.info(f"sub_asset_class '{sub_name}' already exists, using existing ID")
-                results[sub_name] = existing["sub_asset_class_id"]
-            else:
-                sub_asset_lookup = SubAssetClassLookup(
-                    name=sub_name, description=None, asset_class_id=asset_class_mapping[asset_name]
-                )
-                lookup_id = lookup_manager.insert_sub_asset_class(sub_asset_lookup)
-                results[sub_name] = lookup_id
-        except Exception as e:
-            context.log.error(f"Error processing sub_asset_class {sub_name}: {e}")
-            raise
-    return results
-
-
-def process_wide_format_lookup(
-    context: AssetExecutionContext,
-    lookup_manager: LookupTableManager,
-    df: pl.DataFrame,
-    config: LookupTableCSVConfig,
-    available_columns: list,
-) -> Dict[str, Any]:
-    """Process lookup tables from wide format CSV.
-
-    Returns:
-        Dictionary mapping lookup type to results (name -> id)
-    """
-    all_results: Dict[str, Any] = {}
-    asset_class_mapping: Dict[str, int] = {}
-
-    # Helper functions for creating lookup objects
-    def create_data_type_lookup(name: str, description: Optional[str]) -> DataTypeLookup:
-        """Create a DataTypeLookup object."""
-        return DataTypeLookup(name=name, description=description)
-
-    def create_structure_type_lookup(name: str, description: Optional[str]) -> StructureTypeLookup:
-        """Create a StructureTypeLookup object."""
-        return StructureTypeLookup(name=name, description=description)
-
-    def create_market_segment_lookup(name: str, description: Optional[str]) -> MarketSegmentLookup:
-        """Create a MarketSegmentLookup object."""
-        return MarketSegmentLookup(name=name, description=description)
-
-    def create_field_type_lookup(
-        name: str, description: Optional[str], field_type_code: str
-    ) -> FieldTypeLookup:
-        """Create a FieldTypeLookup object."""
-        return FieldTypeLookup(name=name, description=description, field_type_code=field_type_code)
-
-    def create_ticker_source_lookup(
-        name: str, description: Optional[str], ticker_source_code: str
-    ) -> TickerSourceLookup:
-        """Create a TickerSourceLookup object."""
-        return TickerSourceLookup(
-            name=name, description=description, ticker_source_code=ticker_source_code
-        )
-
-    def create_region_lookup(name: str, description: Optional[str]) -> RegionLookup:
-        """Create a RegionLookup object."""
-        return RegionLookup(name=name, description=description)
-
-    def create_currency_lookup(
-        name: str, description: Optional[str], currency_code: Optional[str] = None
-    ) -> CurrencyLookup:
-        """Create a CurrencyLookup object."""
-        return CurrencyLookup(
-            name=name, description=description, currency_code=currency_code or name
-        )
-
-    def create_term_lookup(name: str, description: Optional[str]) -> TermLookup:
-        """Create a TermLookup object."""
-        return TermLookup(name=name, description=description)
-
-    def create_tenor_lookup(
-        name: str, description: Optional[str], tenor_code: Optional[str] = None
-    ) -> TenorLookup:
-        """Create a TenorLookup object."""
-        return TenorLookup(name=name, description=description, tenor_code=tenor_code or name)
-
-    def create_country_lookup(
-        name: str, description: Optional[str], country_code: Optional[str] = None
-    ) -> CountryLookup:
-        """Create a CountryLookup object."""
-        return CountryLookup(name=name, description=description, country_code=country_code or name)
-
-    # Processor functions for each lookup type
-    def process_asset_class(values: list, allowed_names: Set[str]) -> Dict[str, int]:
-        """Process asset_class lookup values."""
-        return process_asset_class_lookup(context, lookup_manager, values, allowed_names)
-
-    def process_product_type(values: list, allowed_names: Set[str]) -> Dict[str, int]:
-        """Process product_type lookup values."""
-        return process_product_type_lookup(context, lookup_manager, values, allowed_names)
-
-    def process_data_type(values: list, allowed_names: Set[str]) -> Dict[str, int]:
-        """Process data_type lookup values."""
-        return process_simple_lookup_type(
-            context,
-            lookup_manager,
-            "data_type",
-            values,
-            allowed_names,
-            create_data_type_lookup,
-            lookup_manager.insert_data_type,
-            lookup_manager.get_data_type_by_name,
-            "data_type_id",
-        )
-
-    def process_structure_type(values: list, allowed_names: Set[str]) -> Dict[str, int]:
-        """Process structure_type lookup values."""
-        return process_simple_lookup_type(
-            context,
-            lookup_manager,
-            "structure_type",
-            values,
-            allowed_names,
-            create_structure_type_lookup,
-            lookup_manager.insert_structure_type,
-            lookup_manager.get_structure_type_by_name,
-            "structure_type_id",
-        )
-
-    def process_market_segment(values: list, allowed_names: Set[str]) -> Dict[str, int]:
-        """Process market_segment lookup values."""
-        return process_simple_lookup_type(
-            context,
-            lookup_manager,
-            "market_segment",
-            values,
-            allowed_names,
-            create_market_segment_lookup,
-            lookup_manager.insert_market_segment,
-            lookup_manager.get_market_segment_by_name,
-            "market_segment_id",
-        )
-
-    def process_field_type(values: list, allowed_names: Set[str]) -> Dict[str, int]:
-        """Process field_type lookup values."""
-        return process_code_based_lookup_type(
-            context,
-            lookup_manager,
-            "field_type",
-            values,
-            allowed_names,
-            create_field_type_lookup,
-            lookup_manager.insert_field_type,
-            lookup_manager.get_field_type_by_name,
-            "field_type_id",
-        )
-
-    def process_ticker_source(values: list, allowed_names: Set[str]) -> Dict[str, int]:
-        """Process ticker_source lookup values."""
-        return process_code_based_lookup_type(
-            context,
-            lookup_manager,
-            "ticker_source",
-            values,
-            allowed_names,
-            create_ticker_source_lookup,
-            lookup_manager.insert_ticker_source,
-            lookup_manager.get_ticker_source_by_name,
-            "ticker_source_id",
-        )
-
-    def process_region(values: list, allowed_names: Set[str]) -> Dict[str, int]:
-        """Process region lookup values."""
-        return process_simple_lookup_type(
-            context,
-            lookup_manager,
-            "region",
-            values,
-            allowed_names,
-            create_region_lookup,
-            lookup_manager.insert_region,
-            lookup_manager.get_region_by_name,
-            "region_id",
-        )
-
-    def process_currency(values: list, allowed_names: Set[str]) -> Dict[str, int]:
-        """Process currency lookup values."""
-        results = {}
-        for value in values:
-            if not value or str(value).strip() == "":
-                continue
-            code = str(value).strip()
-            validate_lookup_name(code, allowed_names, "currency")
-            try:
-                existing = lookup_manager.get_currency_by_code(code)
-                if existing:
-                    context.log.info(f"currency '{code}' already exists, using existing ID")
-                    results[code] = existing["currency_id"]
-                else:
-                    currency_lookup = create_currency_lookup(code, None, code)
-                    lookup_id = lookup_manager.insert_currency(currency_lookup)
-                    results[code] = lookup_id
-            except Exception as e:
-                context.log.error(f"Error processing currency {code}: {e}")
-                raise
-        return results
-
-    def process_term(values: list, allowed_names: Set[str]) -> Dict[str, int]:
-        """Process term lookup values."""
-        return process_simple_lookup_type(
-            context,
-            lookup_manager,
-            "term",
-            values,
-            allowed_names,
-            create_term_lookup,
-            lookup_manager.insert_term,
-            lookup_manager.get_term_by_name,
-            "term_id",
-        )
-
-    def process_tenor(values: list, allowed_names: Set[str]) -> Dict[str, int]:
-        """Process tenor lookup values."""
-        results = {}
-        for value in values:
-            if not value or str(value).strip() == "":
-                continue
-            code = str(value).strip()
-            validate_lookup_name(code, allowed_names, "tenor")
-            try:
-                existing = lookup_manager.get_tenor_by_code(code)
-                if existing:
-                    context.log.info(f"tenor '{code}' already exists, using existing ID")
-                    results[code] = existing["tenor_id"]
-                else:
-                    tenor_lookup = create_tenor_lookup(code, None, code)
-                    lookup_id = lookup_manager.insert_tenor(tenor_lookup)
-                    results[code] = lookup_id
-            except Exception as e:
-                context.log.error(f"Error processing tenor {code}: {e}")
-                raise
-        return results
-
-    def process_country(values: list, allowed_names: Set[str]) -> Dict[str, int]:
-        """Process country lookup values."""
-        results = {}
-        for value in values:
-            if not value or str(value).strip() == "":
-                continue
-            code = str(value).strip()
-            validate_lookup_name(code, allowed_names, "country")
-            try:
-                existing = lookup_manager.get_country_by_code(code)
-                if existing:
-                    context.log.info(f"country '{code}' already exists, using existing ID")
-                    results[code] = existing["country_id"]
-                else:
-                    country_lookup = create_country_lookup(code, None, code)
-                    lookup_id = lookup_manager.insert_country(country_lookup)
-                    results[code] = lookup_id
-            except Exception as e:
-                context.log.error(f"Error processing country {code}: {e}")
-                raise
-        return results
-
-    def get_asset_class_mapping() -> Dict[str, int]:
-        """Get the asset_class mapping."""
-        return asset_class_mapping
-
-    # Define lookup type processors
-    lookup_processors = {
-        "asset_class": (process_asset_class, get_asset_class_mapping),
-        "product_type": (process_product_type, None),
-        "data_type": (process_data_type, None),
-        "structure_type": (process_structure_type, None),
-        "market_segment": (process_market_segment, None),
-        "field_type": (process_field_type, None),
-        "ticker_source": (process_ticker_source, None),
-        "region": (process_region, None),
-        "currency": (process_currency, None),
-        "term": (process_term, None),
-        "tenor": (process_tenor, None),
-        "country": (process_country, None),
-    }
-
-    # Process independent lookup types first
-    for lookup_type in LOOKUP_TABLE_PROCESSING_ORDER:
-        if lookup_type in available_columns:
-            if config.lookup_table_type in ("all", lookup_type):
-                allowed_names = load_allowed_names(config.allowed_names_csv_path, lookup_type)
-                values = df[lookup_type].drop_nulls().unique().to_list()
-                context.log.info(f"Loading {len(values)} {lookup_type}s")
-
-                processor, result_getter = lookup_processors[lookup_type]
-                results = processor(values, allowed_names)
-
-                if result_getter:
-                    # For asset_class, update the mapping
-                    asset_class_mapping.update(results)
-                    all_results[lookup_type] = asset_class_mapping
-                else:
-                    all_results[lookup_type] = results
-
-    # Process sub_asset_class last (depends on asset_class)
-    if "sub_asset_class" in available_columns and "asset_class" in available_columns:
-        if config.lookup_table_type in ("all", "sub_asset_class"):
-            # Ensure asset_class_mapping is populated
-            if not asset_class_mapping:
-                for name in df["asset_class"].drop_nulls().unique().to_list():
-                    if name and str(name).strip():
-                        existing = lookup_manager.get_asset_class_by_name(str(name).strip())
-                        if existing:
-                            asset_class_mapping[str(name).strip()] = existing["asset_class_id"]
-
-            allowed_names = load_allowed_names(config.allowed_names_csv_path, "sub_asset_class")
-            context.log.info(
-                f"Loading sub_asset_classes with {len(asset_class_mapping)} asset classes available"
-            )
-
-            results = process_sub_asset_class_lookup(
-                context, lookup_manager, df, allowed_names, asset_class_mapping
-            )
-            all_results["sub_asset_class"] = results
-
-    return all_results
-
-
-def process_long_format_lookup(
-    context: AssetExecutionContext,
-    lookup_manager: LookupTableManager,
-    df: pl.DataFrame,
-    config: LookupTableCSVConfig,
-) -> Dict[str, int]:
-    """Process lookup tables from long format CSV.
-
-    Returns:
-        Dictionary mapping name to lookup_id
-    """
-    allowed_names = load_allowed_names(config.allowed_names_csv_path, config.lookup_table_type)
-    context.log.info(
-        f"Loaded {len(allowed_names)} allowed names from {config.allowed_names_csv_path}"
-    )
-
-    if "lookup_table_type" in df.columns:
-        df = df.filter(pl.col("lookup_table_type") == config.lookup_table_type)
-        context.log.info(f"Filtered to {len(df)} rows for {config.lookup_table_type}")
-
-    results: Dict[str, int] = {}
-
-    # Handler functions for each lookup type
-    def handle_asset_class(name: str, description: Optional[str], row: Dict[str, Any]) -> None:
-        """Handle asset_class insertion for long format."""
-        _handle_asset_class(lookup_manager, name, description, results)
-
-    def handle_product_type(name: str, description: Optional[str], row: Dict[str, Any]) -> None:
-        """Handle product_type insertion for long format."""
-        _handle_product_type(lookup_manager, name, description, row, results)
-
-    def handle_sub_asset_class(name: str, description: Optional[str], row: Dict[str, Any]) -> None:
-        """Handle sub_asset_class insertion for long format."""
-        _handle_sub_asset_class(lookup_manager, name, description, row, results)
-
-    def handle_data_type(name: str, description: Optional[str], row: Dict[str, Any]) -> None:
-        """Handle data_type insertion for long format."""
-        _handle_simple_lookup(
-            lookup_manager,
-            name,
-            description,
-            DataTypeLookup,
-            lookup_manager.insert_data_type,
-            lookup_manager.get_data_type_by_name,
-            "data_type_id",
-            results,
-        )
-
-    def handle_structure_type(name: str, description: Optional[str], row: Dict[str, Any]) -> None:
-        """Handle structure_type insertion for long format."""
-        _handle_simple_lookup(
-            lookup_manager,
-            name,
-            description,
-            StructureTypeLookup,
-            lookup_manager.insert_structure_type,
-            lookup_manager.get_structure_type_by_name,
-            "structure_type_id",
-            results,
-        )
-
-    def handle_market_segment(name: str, description: Optional[str], row: Dict[str, Any]) -> None:
-        """Handle market_segment insertion for long format."""
-        _handle_simple_lookup(
-            lookup_manager,
-            name,
-            description,
-            MarketSegmentLookup,
-            lookup_manager.insert_market_segment,
-            lookup_manager.get_market_segment_by_name,
-            "market_segment_id",
-            results,
-        )
-
-    def handle_field_type(name: str, description: Optional[str], row: Dict[str, Any]) -> None:
-        """Handle field_type insertion for long format."""
-        _handle_field_type(lookup_manager, name, description, row, results)
-
-    def handle_ticker_source(name: str, description: Optional[str], row: Dict[str, Any]) -> None:
-        """Handle ticker_source insertion for long format."""
-        _handle_ticker_source(lookup_manager, name, description, row, results)
-
-    def handle_region(name: str, description: Optional[str], row: Dict[str, Any]) -> None:
-        """Handle region insertion for long format."""
-        _handle_simple_lookup(
-            lookup_manager,
-            name,
-            description,
-            RegionLookup,
-            lookup_manager.insert_region,
-            lookup_manager.get_region_by_name,
-            "region_id",
-            results,
-        )
-
-    def handle_currency(name: str, description: Optional[str], row: Dict[str, Any]) -> None:
-        """Handle currency insertion for long format."""
-        existing = lookup_manager.get_currency_by_code(name)
-        if existing:
-            results[name] = existing["currency_id"]
-        else:
-            currency_code = row.get("currency_code", name)
-            currency_name = row.get("currency_name")
-            currency_lookup = CurrencyLookup(
-                name=name,
-                description=description,
-                currency_code=currency_code,
-                currency_name=currency_name,
-            )
-            lookup_id = lookup_manager.insert_currency(currency_lookup)
-            results[name] = lookup_id
-
-    def handle_term(name: str, description: Optional[str], row: Dict[str, Any]) -> None:
-        """Handle term insertion for long format."""
-        _handle_simple_lookup(
-            lookup_manager,
-            name,
-            description,
-            TermLookup,
-            lookup_manager.insert_term,
-            lookup_manager.get_term_by_name,
-            "term_id",
-            results,
-        )
-
-    def handle_tenor(name: str, description: Optional[str], row: Dict[str, Any]) -> None:
-        """Handle tenor insertion for long format."""
-        existing = lookup_manager.get_tenor_by_code(name)
-        if existing:
-            results[name] = existing["tenor_id"]
-        else:
-            tenor_code = row.get("tenor_code", name)
-            tenor_name = row.get("tenor_name")
-            tenor_lookup = TenorLookup(
-                name=name, description=description, tenor_code=tenor_code, tenor_name=tenor_name
-            )
-            lookup_id = lookup_manager.insert_tenor(tenor_lookup)
-            results[name] = lookup_id
-
-    def handle_country(name: str, description: Optional[str], row: Dict[str, Any]) -> None:
-        """Handle country insertion for long format."""
-        existing = lookup_manager.get_country_by_code(name)
-        if existing:
-            results[name] = existing["country_id"]
-        else:
-            country_code = row.get("country_code", name)
-            country_name = row.get("country_name")
-            country_lookup = CountryLookup(
-                name=name,
-                description=description,
-                country_code=country_code,
-                country_name=country_name,
-            )
-            lookup_id = lookup_manager.insert_country(country_lookup)
-            results[name] = lookup_id
-
-    # Define handlers for each lookup type
-    handlers = {
-        "asset_class": handle_asset_class,
-        "product_type": handle_product_type,
-        "sub_asset_class": handle_sub_asset_class,
-        "data_type": handle_data_type,
-        "structure_type": handle_structure_type,
-        "market_segment": handle_market_segment,
-        "field_type": handle_field_type,
-        "ticker_source": handle_ticker_source,
-        "region": handle_region,
-        "currency": handle_currency,
-        "term": handle_term,
-        "tenor": handle_tenor,
-        "country": handle_country,
-    }
-
-    handler = handlers.get(config.lookup_table_type)
-    if not handler:
-        raise ValueError(f"Unknown lookup table type: {config.lookup_table_type}")
-
-    # Process each row
-    for row in df.iter_rows(named=True):
-        name = row["name"]
-        validate_lookup_name(name, allowed_names, config.lookup_table_type)
-        description = row.get("description")
-
-        try:
-            handler(name, description, row)
-        except Exception as e:
-            context.log.error(f"Error processing row for {name}: {e}")
-            raise
-
-    return results
-
-
-def _handle_asset_class(
-    lookup_manager: LookupTableManager,
-    name: str,
-    description: Optional[str],
-    results: Dict[str, int],
-) -> None:
-    """Handle asset_class insertion for long format."""
-    asset_lookup = AssetClassLookup(name=name, description=description)
-    existing = lookup_manager.get_asset_class_by_name(name)
-    if not existing:
-        lookup_id = lookup_manager.insert_asset_class(asset_lookup)
-        results[name] = lookup_id
-    else:
-        results[name] = existing["asset_class_id"]
-
-
-def _handle_product_type(
-    lookup_manager: LookupTableManager,
-    name: str,
-    description: Optional[str],
-    row: Dict[str, Any],
-    results: Dict[str, int],
-) -> None:
-    """Handle product_type insertion for long format."""
-    existing = lookup_manager.get_product_type_by_name(name)
-    if existing:
-        results[name] = existing["product_type_id"]
-    else:
-        is_derived = row.get("is_derived", False)
-        if isinstance(is_derived, str):
-            is_derived = is_derived.lower() in ("true", "1", "yes")
-        product_lookup = ProductTypeLookup(
-            name=name, description=description, is_derived=bool(is_derived)
-        )
-        lookup_id = lookup_manager.insert_product_type(product_lookup)
-        results[name] = lookup_id
-
-
-def _handle_sub_asset_class(
-    lookup_manager: LookupTableManager,
-    name: str,
-    description: Optional[str],
-    row: Dict[str, Any],
-    results: Dict[str, int],
-) -> None:
-    """Handle sub_asset_class insertion for long format."""
-    existing = lookup_manager.get_sub_asset_class_by_name(name)
-    if existing:
-        results[name] = existing["sub_asset_class_id"]
-    else:
-        asset_class_id = row.get("asset_class_id")
-        if asset_class_id is None:
-            raise ValueError("sub_asset_class requires asset_class_id")
-        sub_asset_lookup = SubAssetClassLookup(
-            name=name, description=description, asset_class_id=int(asset_class_id)
-        )
-        lookup_id = lookup_manager.insert_sub_asset_class(sub_asset_lookup)
-        results[name] = lookup_id
-
-
-def _handle_simple_lookup(
-    lookup_manager: LookupTableManager,
-    name: str,
-    description: Optional[str],
-    lookup_class: type,
-    insert_method: Callable,
-    get_by_name_method: Callable[[str], Optional[Dict[str, Any]]],
-    id_field_name: str,
-    results: Dict[str, int],
-) -> None:
-    """Handle simple lookup insertion for long format."""
-    existing = get_by_name_method(name)
-    if existing:
-        results[name] = existing[id_field_name]
-    else:
-        lookup_obj = lookup_class(name=name, description=description)
-        lookup_id = insert_method(lookup_obj)
-        results[name] = lookup_id
-
-
-def _handle_field_type(
-    lookup_manager: LookupTableManager,
-    name: str,
-    description: Optional[str],
-    row: Dict[str, Any],
-    results: Dict[str, int],
-) -> None:
-    """Handle field_type insertion for long format."""
-    existing = lookup_manager.get_field_type_by_name(name)
-    if existing:
-        results[name] = existing["field_type_id"]
-    else:
-        field_type_code = row.get("field_type_code")
-        if not field_type_code:
-            raise ValueError("field_type requires field_type_code")
-        field_lookup = FieldTypeLookup(
-            name=name, description=description, field_type_code=str(field_type_code)
-        )
-        lookup_id = lookup_manager.insert_field_type(field_lookup)
-        results[name] = lookup_id
-
-
-def _handle_ticker_source(
-    lookup_manager: LookupTableManager,
-    name: str,
-    description: Optional[str],
-    row: Dict[str, Any],
-    results: Dict[str, int],
-) -> None:
-    """Handle ticker_source insertion for long format."""
-    existing = lookup_manager.get_ticker_source_by_name(name)
-    if existing:
-        results[name] = existing["ticker_source_id"]
-    else:
-        ticker_source_code = row.get("ticker_source_code")
-        if not ticker_source_code:
-            raise ValueError("ticker_source requires ticker_source_code")
-        ticker_lookup = TickerSourceLookup(
-            name=name,
-            description=description,
-            ticker_source_code=str(ticker_source_code),
-        )
-        lookup_id = lookup_manager.insert_ticker_source(ticker_lookup)
-        results[name] = lookup_id
+from .config import MetaSeriesCSVConfig
 
 
 def load_meta_series_logic(
     context: AssetExecutionContext,
     config: MetaSeriesCSVConfig,
     clickhouse: ClickHouseResource,
-) -> pl.DataFrame:
-    """Load meta series from CSV file logic.
+) -> tuple[pl.DataFrame, Dict[str, int]]:
+    """Load meta series from CSV file using staging → metaSeries flow.
 
     Args:
         context: Dagster execution context
@@ -924,7 +32,7 @@ def load_meta_series_logic(
         clickhouse: ClickHouse resource
 
     Returns:
-        DataFrame with loaded meta series results
+        Tuple of (DataFrame with loaded meta series results, results dictionary)
     """
     context.log.info(f"Loading meta series from {config.csv_path}")
 
@@ -938,149 +46,9 @@ def load_meta_series_logic(
     # Validate required columns
     validate_csv_columns(df, META_SERIES_REQUIRED_COLUMNS, config.csv_path)
 
-    meta_manager = MetaSeriesManager(clickhouse)
-    lookup_manager = LookupTableManager(clickhouse)
-    results = {}
-
-    # Process each row
-    for row in df.iter_rows(named=True):
-        try:
-            # Skip empty rows (where series_name or series_code is missing)
-            if is_empty_row(row, ["series_name", "series_code"]):
-                context.log.warning("Skipping empty row")
-                continue
-
-            # Parse data_source
-            data_source_str = str(row.get("data_source", ""))
-            data_source = parse_data_source(data_source_str)
-
-            # Look up IDs for region, currency, term, tenor, country if string values are provided
-            region_id = resolve_lookup_id_from_string(
-                row,
-                "region_id",
-                "region",
-                lookup_manager,
-                "get_region_by_name",
-                context,
-            )
-
-            currency_id = resolve_lookup_id_from_string(
-                row,
-                "currency_id",
-                "currency",
-                lookup_manager,
-                "get_currency_by_code",
-                context,
-            )
-
-            term_id = resolve_lookup_id_from_string(
-                row,
-                "term_id",
-                "term",
-                lookup_manager,
-                "get_term_by_name",
-                context,
-            )
-
-            tenor_id = resolve_lookup_id_from_string(
-                row,
-                "tenor_id",
-                "tenor",
-                lookup_manager,
-                "get_tenor_by_code",
-                context,
-            )
-
-            # Country can be in either "country" or "countries" field
-            country_id = resolve_lookup_id_from_string(
-                row,
-                "country_id",
-                "country",
-                lookup_manager,
-                "get_country_by_code",
-                context,
-            )
-            if not country_id:
-                country_id = resolve_lookup_id_from_string(
-                    row,
-                    "country_id",
-                    "countries",
-                    lookup_manager,
-                    "get_country_by_code",
-                    context,
-                )
-
-            # Parse is_active (default to True if not provided)
-            is_active = True
-            if row.get("is_active") is not None:
-                is_active_val = str(row.get("is_active")).strip().lower()
-                is_active = is_active_val in ("1", "true", "yes", "y", "active")
-
-            meta_series = MetaSeriesCreate(
-                series_name=str(row["series_name"]),
-                series_code=str(row["series_code"]),
-                data_source=data_source,
-                field_type_id=safe_int(row.get("field_type_id"), "field_type_id", required=False),
-                asset_class_id=safe_int(
-                    row.get("asset_class_id"), "asset_class_id", required=False
-                ),
-                sub_asset_class_id=safe_int(
-                    row.get("sub_asset_class_id"), "sub_asset_class_id", required=False
-                ),
-                product_type_id=safe_int(
-                    row.get("product_type_id"), "product_type_id", required=False
-                ),
-                data_type_id=safe_int(row.get("data_type_id"), "data_type_id", required=False),
-                structure_type_id=safe_int(
-                    row.get("structure_type_id"), "structure_type_id", required=False
-                ),
-                market_segment_id=safe_int(
-                    row.get("market_segment_id"), "market_segment_id", required=False
-                ),
-                ticker_source_id=safe_int(
-                    row.get("ticker_source_id"), "ticker_source_id", required=False
-                ),
-                ticker=str(row["ticker"]),
-                region_id=region_id,
-                currency_id=currency_id,
-                term_id=term_id,
-                tenor_id=tenor_id,
-                country_id=country_id,
-                calculation_formula=str(row["calculation_formula"])
-                if row.get("calculation_formula")
-                else None,
-                description=str(row["description"]) if row.get("description") else None,
-                is_active=is_active,
-            )
-
-            # Check if series already exists
-            existing = meta_manager.get_meta_series_by_code(meta_series.series_code)
-            if existing:
-                context.log.warning(
-                    f"Meta series {meta_series.series_code} already exists, skipping"
-                )
-                results[meta_series.series_code] = existing["series_id"]
-            else:
-                series_id = meta_manager.create_meta_series(meta_series, created_by="csv_loader")
-                results[meta_series.series_code] = series_id
-
-        except (CSVValidationError, DataSourceValidationError, MetaSeriesNotFoundError) as e:
-            context.log.error(
-                f"Validation error processing row for {row.get('series_code', 'unknown')}: {e}"
-            )
-            raise
-        except (ValueError, TypeError) as e:
-            context.log.error(
-                f"Data error processing row for {row.get('series_code', 'unknown')}: {e}"
-            )
-            raise CSVValidationError(
-                f"Invalid data in row for {row.get('series_code', 'unknown')}: {e}"
-            ) from e
-        except Exception as e:
-            context.log.error(
-                f"Unexpected error processing row for {row.get('series_code', 'unknown')}: {e}"
-            )
-            raise CSVValidationError(f"Unexpected error processing row: {e}") from e
+    # Use staging → metaSeries flow with SQL-based processing
+    context.log.info("Using staging → metaSeries flow with deterministic ID generation")
+    results = process_staging_to_meta_series(context, clickhouse, df)
 
     # Convert dictionary to Polars DataFrame
     result_df = pl.DataFrame(
@@ -1091,3 +59,355 @@ def load_meta_series_logic(
     )
 
     return result_df, results
+
+
+def process_staging_to_meta_series(
+    context: AssetExecutionContext,
+    clickhouse: ClickHouseResource,
+    df: pl.DataFrame,
+) -> Dict[str, int]:
+    """Process meta series from staging table to metaSeries table using SQL.
+
+    This function implements the staging → metaSeries flow with deterministic sequential IDs.
+    Data flow: CSV → staging_meta_series → metaSeries
+    Uses dictionaries to resolve string lookup values (region, currency, term, tenor, country) to IDs.
+
+    Args:
+        context: Dagster execution context
+        clickhouse: ClickHouse resource
+        df: Polars DataFrame with meta series data
+
+    Returns:
+        Dictionary mapping series_code -> series_id
+    """
+    context.log.info("Processing meta series from staging to metaSeries using SQL")
+
+    # Step 1: Load CSV into staging table
+    staging_columns = [
+        "series_name",
+        "series_code",
+        "data_source",
+        "field_type_id",
+        "asset_class_id",
+        "sub_asset_class_id",
+        "product_type_id",
+        "data_type_id",
+        "structure_type_id",
+        "market_segment_id",
+        "ticker_source_id",
+        "ticker",
+        "region",
+        "currency",
+        "term",
+        "tenor",
+        "country",
+        "valid_from",
+        "valid_to",
+        "calculation_formula",
+        "description",
+        "is_active",
+    ]
+    load_csv_to_staging_table(
+        context, clickhouse, df, "staging_meta_series", staging_columns
+    )
+
+    # Step 2: Insert into metaSeries using SQL with LEFT JOIN-based ID resolution
+    # Resolve string values to IDs using LEFT JOINs with lookup tables
+    # Note: CSV may have both direct IDs (field_type_id) and string values (region)
+    # We'll use LEFT JOINs to resolve string lookups, keeping direct IDs if provided
+    # ClickHouse doesn't support LIMIT in correlated subqueries, so we use JOINs instead
+    sql = """
+    INSERT INTO metaSeries (
+        series_id, series_name, series_code, data_source,
+        field_type_id, asset_class_id, sub_asset_class_id, product_type_id,
+        data_type_id, structure_type_id, market_segment_id, ticker_source_id,
+        ticker, region_id, currency_id, term_id, tenor_id, country_id,
+        calculation_formula, description, is_active, created_at, updated_at, created_by
+    )
+    SELECT
+        (SELECT if(max(series_id) IS NULL, 0, max(series_id)) FROM metaSeries) +
+        row_number() OVER (ORDER BY st.series_code) AS series_id,
+        st.series_name,
+        st.series_code,
+        st.data_source,
+        st.field_type_id,
+        st.asset_class_id,
+        st.sub_asset_class_id,
+        st.product_type_id,
+        st.data_type_id,
+        st.structure_type_id,
+        st.market_segment_id,
+        st.ticker_source_id,
+        st.ticker,
+        -- Resolve region: use LEFT JOIN if string provided
+        if(st.region IS NOT NULL AND st.region != '', r.region_id, NULL) AS region_id,
+        -- Resolve currency: use LEFT JOIN if string provided
+        if(st.currency IS NOT NULL AND st.currency != '', c.currency_id, NULL) AS currency_id,
+        -- Resolve term: use LEFT JOIN if string provided
+        if(st.term IS NOT NULL AND st.term != '', t.term_id, NULL) AS term_id,
+        -- Resolve tenor: use LEFT JOIN if string provided
+        if(st.tenor IS NOT NULL AND st.tenor != '', tn.tenor_id, NULL) AS tenor_id,
+        -- Resolve country: use LEFT JOIN if string provided
+        if(st.country IS NOT NULL AND st.country != '', co.country_id, NULL) AS country_id,
+        st.calculation_formula,
+        st.description,
+        -- Parse is_active: convert string to UInt8 (default to 1 if not provided)
+        if(st.is_active IS NULL OR st.is_active = '',
+           1,
+           if(lower(st.is_active) IN ('1', 'true', 'yes', 'y', 'active'), 1, 0)) AS is_active,
+        now64(6) AS created_at,
+        now64(6) AS updated_at,
+        'csv_loader' AS created_by
+    FROM staging_meta_series st
+    LEFT JOIN regionLookup r ON st.region = r.region_name
+    LEFT JOIN currencyLookup c ON st.currency = c.currency_code
+    LEFT JOIN termLookup t ON st.term = t.term_name
+    LEFT JOIN tenorLookup tn ON st.tenor = tn.tenor_code
+    LEFT JOIN countryLookup co ON st.country = co.country_code
+    WHERE st.series_code IS NOT NULL
+        AND st.series_code != ''
+        AND st.series_code NOT IN (SELECT series_code FROM metaSeries)
+    ORDER BY st.series_code
+    """
+
+    try:
+        clickhouse.execute_command(sql)
+        context.log.info("Successfully inserted meta series from staging to metaSeries")
+
+        # Fetch results (series_code -> series_id mapping)
+        query = "SELECT series_id, series_code FROM metaSeries ORDER BY series_id"
+        result = clickhouse.execute_query(query)
+        results = {}
+        if hasattr(result, "result_rows") and result.result_rows:
+            for row in result.result_rows:
+                results[row[1]] = row[0]
+
+        context.log.info(f"Loaded {len(results)} meta series records")
+        return results
+
+    except Exception as e:
+        context.log.error(f"Error processing meta series from staging: {e}")
+        raise
+
+
+def load_csv_to_staging_table(
+    context: AssetExecutionContext,
+    clickhouse: ClickHouseResource,
+    df: pl.DataFrame,
+    staging_table_name: str,
+    staging_columns: list[str],
+) -> None:
+    """Load CSV data into a staging table (reusable function).
+
+    Args:
+        context: Dagster execution context
+        clickhouse: ClickHouse resource
+        df: Polars DataFrame with data
+        staging_table_name: Name of the staging table (e.g., "staging_lookup_tables")
+        staging_columns: List of column names expected in staging table
+    """
+    context.log.info(f"Truncating {staging_table_name} for fresh load")
+    clickhouse.execute_command(f"TRUNCATE TABLE IF EXISTS {staging_table_name}")
+
+    # Filter DataFrame to only include staging columns that exist
+    available_columns = [col for col in staging_columns if col in df.columns]
+    if not available_columns:
+        raise CSVValidationError(
+            f"CSV DataFrame must contain at least one of these columns: {staging_columns}"
+        )
+
+    df_staging = df.select(available_columns)
+
+    # Convert to list of lists (rows) - clickhouse-connect expects list of lists/tuples
+    # Each row is a list/tuple of values in the same order as available_columns
+    data = df_staging.to_numpy().tolist()
+    context.log.info(f"Inserting {len(data)} rows into {staging_table_name}")
+
+    # Insert data using clickhouse-connect (works over HTTP)
+    clickhouse.insert_data(
+        table=staging_table_name,
+        data=data,
+        column_names=available_columns,
+    )
+
+    context.log.info(f"Successfully loaded {len(data)} rows into {staging_table_name}")
+
+
+
+
+def process_staging_to_dimensions(
+    context: AssetExecutionContext,
+    clickhouse: ClickHouseResource,
+    df: pl.DataFrame,
+) -> Dict[str, Dict[str, int]]:
+    """Process lookup tables from staging table to dimension tables using SQL.
+
+    This function implements the staging → dimensions flow with deterministic sequential IDs.
+    Data flow: CSV → staging_lookup_tables → dimension_tables
+
+    Args:
+        context: Dagster execution context
+        clickhouse: ClickHouse resource
+        df: Polars DataFrame with lookup table data
+
+    Returns:
+        Dictionary mapping lookup_type -> {name: id}
+    """
+    from dagster_quickstart.utils.constants import LOOKUP_TABLE_COLUMNS
+
+    context.log.info("Processing lookup tables from staging to dimensions using SQL")
+
+    # Step 1: Load CSV into staging table
+    staging_columns = [
+        "asset_class",
+        "product_type",
+        "sub_asset_class",
+        "data_type",
+        "structure_type",
+        "market_segment",
+        "field_type",
+        "ticker_source",
+        "country",
+        "currency",
+        "region",
+        "term",
+        "tenor",
+    ]
+    load_csv_to_staging_table(
+        context, clickhouse, df, "staging_lookup_tables", staging_columns
+    )
+
+    all_results: Dict[str, Dict[str, int]] = {}
+    available_columns = [col for col in LOOKUP_TABLE_COLUMNS if col in df.columns]
+
+    # Step 2: Process independent lookup types first (in dependency order)
+    for lookup_type in LOOKUP_TABLE_PROCESSING_ORDER:
+        if lookup_type not in available_columns:
+            continue
+
+        staging_column = lookup_type
+        table_name = DB_TABLES[lookup_type]
+        id_column, name_column = DB_COLUMNS[lookup_type]
+
+        context.log.info(f"Processing {lookup_type} from staging to {table_name}")
+
+        try:
+            # Determine insert fields and select fields based on lookup type
+            # Simple lookups: just id, name, timestamps
+            # Code-based lookups: id, name/code fields, timestamps
+            if lookup_type in ["asset_class", "data_type", "structure_type", "market_segment", "region", "term", "product_type", "field_type"]:
+                insert_fields = f"{id_column}, {name_column}"
+                select_fields = f"{staging_column} AS {name_column}"
+                check_field = name_column
+            elif lookup_type == "ticker_source":
+                insert_fields = f"{id_column}, {name_column}, ticker_source_code"
+                select_fields = f"{staging_column} AS {name_column}, {staging_column} AS ticker_source_code"
+                check_field = name_column  # Check against ticker_source_name
+            else:  # currency, tenor, country
+                code_field_map = {
+                    "currency": ("currency_code", "currency_name"),
+                    "tenor": ("tenor_code", "tenor_name"),
+                    "country": ("country_code", "country_name"),
+                }
+                code_field, name_field = code_field_map[lookup_type]
+                insert_fields = f"{id_column}, {code_field}, {name_field}"
+                select_fields = f"{staging_column} AS {code_field}, {staging_column} AS {name_field}"
+                check_field = code_field
+            
+            # Generate and execute SQL (same pattern for all lookup types)
+            sql = f"""
+            INSERT INTO {table_name} ({insert_fields}, created_at, updated_at)
+            SELECT
+                (SELECT if(max({id_column}) IS NULL, 0, max({id_column})) FROM {table_name}) +
+                row_number() OVER (ORDER BY {staging_column}) AS {id_column},
+                {select_fields},
+                now64(6) AS created_at,
+                now64(6) AS updated_at
+            FROM (
+                SELECT DISTINCT {staging_column}
+                FROM staging_lookup_tables
+                WHERE {staging_column} IS NOT NULL
+                    AND {staging_column} != ''
+                    AND {staging_column} NOT IN (SELECT {check_field} FROM {table_name})
+            )
+            ORDER BY {staging_column}
+            """
+            clickhouse.execute_command(sql)
+
+            # Fetch results (name -> id mapping)
+            query = f"SELECT {id_column}, {name_column} FROM {table_name} ORDER BY {id_column}"
+            result = clickhouse.execute_query(query)
+            results = {}
+            if hasattr(result, "result_rows") and result.result_rows:
+                for row in result.result_rows:
+                    lookup_id, lookup_name = row[0], row[1]
+                    results[lookup_name] = lookup_id
+
+            all_results[lookup_type] = results
+            context.log.info(f"Loaded {len(results)} {lookup_type} records")
+
+        except Exception as e:
+            context.log.error(f"Error processing {lookup_type}: {e}")
+            raise
+
+    # Step 3: Process sub_asset_class last (depends on asset_class)
+    if "sub_asset_class" in available_columns and "asset_class" in available_columns:
+        context.log.info("Processing sub_asset_class (requires asset_class mapping)")
+
+        # Get asset_class mapping
+        asset_class_mapping = all_results.get("asset_class", {})
+        if not asset_class_mapping:
+            # Fetch asset_class mapping if not already loaded
+            query = "SELECT asset_class_id, asset_class_name FROM assetClassLookup"
+            result = clickhouse.execute_query(query)
+            asset_class_mapping = {}
+            if hasattr(result, "result_rows") and result.result_rows:
+                for row in result.result_rows:
+                    asset_class_mapping[row[1]] = row[0]
+
+        # Build SQL for sub_asset_class with asset_class_id
+        sql = """
+        INSERT INTO subAssetClassLookup (sub_asset_class_id, sub_asset_class_name, asset_class_id, created_at, updated_at)
+        SELECT
+            (SELECT if(max(sub_asset_class_id) IS NULL, 0, max(sub_asset_class_id)) FROM subAssetClassLookup) +
+            row_number() OVER (ORDER BY st.sub_asset_class, ac.asset_class_id) AS sub_asset_class_id,
+            st.sub_asset_class AS sub_asset_class_name,
+            ac.asset_class_id,
+            now64(6) AS created_at,
+            now64(6) AS updated_at
+        FROM (
+            SELECT DISTINCT sub_asset_class, asset_class
+            FROM staging_lookup_tables
+            WHERE sub_asset_class IS NOT NULL
+                AND sub_asset_class != ''
+                AND asset_class IS NOT NULL
+                AND asset_class != ''
+                AND (sub_asset_class, asset_class) NOT IN (
+                    SELECT sub_asset_class_name, asset_class_name
+                    FROM subAssetClassLookup s
+                    JOIN assetClassLookup a ON s.asset_class_id = a.asset_class_id
+                )
+        ) st
+        JOIN assetClassLookup ac ON st.asset_class = ac.asset_class_name
+        ORDER BY st.sub_asset_class, ac.asset_class_id
+        """
+
+        try:
+            clickhouse.execute_command(sql)
+
+            # Fetch results
+            query = "SELECT sub_asset_class_id, sub_asset_class_name FROM subAssetClassLookup ORDER BY sub_asset_class_id"
+            result = clickhouse.execute_query(query)
+            results = {}
+            if hasattr(result, "result_rows") and result.result_rows:
+                for row in result.result_rows:
+                    results[row[1]] = row[0]
+
+            all_results["sub_asset_class"] = results
+            context.log.info(f"Loaded {len(results)} sub_asset_class records")
+
+        except Exception as e:
+            context.log.error(f"Error processing sub_asset_class: {e}")
+            raise
+
+    return all_results

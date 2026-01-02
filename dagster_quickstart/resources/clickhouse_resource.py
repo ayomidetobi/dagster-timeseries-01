@@ -1,13 +1,12 @@
 """Dagster resources for the financial platform."""
 
-import os
-import subprocess
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
 import clickhouse_connect
 from clickhouse_connect.driver import Client
+from clickhouse_migrations.clickhouse_cluster import ClickhouseCluster
 from dagster import ConfigurableResource, InitResourceContext, get_dagster_logger
 from decouple import config
 
@@ -122,55 +121,41 @@ class ClickHouseResource(ConfigurableResource):
         migrations_dir.mkdir(exist_ok=True)
         return migrations_dir
 
-    def get_migration_url(self) -> str:
-        """Get ClickHouse connection URL for migrations using clickhousedb protocol.
-
-        Returns:
-            Connection URL in format expected by clickhouse-migrate with clickhousedb protocol
-        """
-        # Use clickhousedb protocol (works with clickhouse-driver)
-        if self.password:
-            return f"clickhousedb://{self.user}:{self.password}@{self.host}/{self.database}?secure={str(self.secure).lower()}"
-        else:
-            return f"clickhousedb://{self.user}@{self.host}/{self.database}?secure={str(self.secure).lower()}"
-
     def run_migrations(self) -> None:
-        """Run all pending migrations using clickhouse-migrate.
+        """Run all pending migrations using clickhouse-migrations.
 
-        This method uses the clickhouse-migrate CLI to apply migrations.
+        This method uses the clickhouse-migrations library to apply migrations.
         Migrations are tracked and only pending ones are applied.
+        Migration files should follow the format: {VERSION}_{name}.sql
         """
         try:
             migrations_dir = self.get_migrations_directory()
 
-            # Set environment variables for clickhouse-migrate
-            env = os.environ.copy()
-            env["CLICKHOUSE_MIGRATE_DATABASES"] = self.get_migration_url()
-            env["CLICKHOUSE_MIGRATE_DIRECTORY"] = str(migrations_dir)
-
-            # Run clickhouse-migrate migrate command
-            result = subprocess.run(
-                ["clickhouse-migrate", "migrate"],
-                env=env,
-                cwd=str(migrations_dir.parent),
-                capture_output=True,
-                text=True,
-                check=False,  # We handle errors manually
+            # Create ClickhouseCluster instance
+            cluster = ClickhouseCluster(
+                db_host=self.host,
+                db_user=self.user,
+                db_password=self.password,
+                db_port=None,
+                secure=self.secure,
+                verify=self.verify,
             )
 
-            if result.returncode != 0:
-                error_msg = result.stderr or result.stdout or "Unknown error"
-                logger.error(f"Migration failed: {error_msg}")
-                raise RuntimeError(f"Migration failed: {error_msg}")
+            # Run migrations
+            cluster.migrate(
+                db_name=self.database,
+                migration_path=str(migrations_dir),
+                cluster_name=None,
+                create_db_if_no_exists=True,
+                multi_statement=True,
+            )
 
             logger.info("Migrations applied successfully")
-            if result.stdout:
-                logger.info(result.stdout)
 
-        except FileNotFoundError:
+        except ImportError:
             logger.error(
-                "clickhouse-migrate CLI not found. "
-                "Install it with: pip install clickhouse-migrate"
+                "clickhouse-migrations library not found. "
+                "Install it with: pip install clickhouse-migrations"
             )
             raise
         except Exception as e:

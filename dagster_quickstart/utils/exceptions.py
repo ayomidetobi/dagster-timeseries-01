@@ -77,3 +77,51 @@ class PyPDLExecutionError(PyPDLError):
     """Raised when PyPDL execution fails."""
 
     pass
+
+
+class DataQualityError(Exception):
+    """Base exception for data quality checks."""
+
+    pass
+
+
+class TimelinessCheckError(DataQualityError):
+    """Raised when timeliness checks fail."""
+
+    pass
+
+
+class CompletenessCheckError(DataQualityError):
+    """Raised when completeness checks fail."""
+
+    pass
+
+
+class AccuracyCheckError(DataQualityError):
+    """Raised when accuracy checks fail."""
+
+    pass
+
+
+class ValidityCheckError(DataQualityError):
+    """Raised when validity checks fail."""
+
+    pass
+
+
+class UniquenessCheckError(DataQualityError):
+    """Raised when uniqueness checks fail."""
+
+    pass
+
+
+class ConsistencyCheckError(DataQualityError):
+    """Raised when consistency checks fail."""
+
+    pass
+
+
+class GreatExpectationsError(Exception):
+    """Raised when Great Expectations operations fail."""
+
+    pass
