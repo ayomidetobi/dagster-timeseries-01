@@ -72,4 +72,3 @@ INSERT_META_SERIES_FROM_STAGING_SQL = """
         AND st.series_code NOT IN (SELECT series_code FROM metaSeries)
     ORDER BY st.series_code
     """
-

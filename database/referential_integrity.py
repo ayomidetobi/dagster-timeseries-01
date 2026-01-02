@@ -135,13 +135,19 @@ class ReferentialIntegrityValidator:
                     lookup_value_str = str(lookup_value).strip()
                     if lookup_value_str:
                         try:
-                            self.validate_lookup_reference(lookup_type, lookup_value_str, series_code)
+                            self.validate_lookup_reference(
+                                lookup_type, lookup_value_str, series_code
+                            )
                         except InvalidLookupReferenceError as e:
                             errors.append(str(e))
 
         if errors:
-            error_message = f"Referential integrity validation failed with {len(errors)} error(s):\n"
-            error_message += "\n".join(f"  - {error}" for error in errors[:20])  # Limit to 20 errors
+            error_message = (
+                f"Referential integrity validation failed with {len(errors)} error(s):\n"
+            )
+            error_message += "\n".join(
+                f"  - {error}" for error in errors[:20]
+            )  # Limit to 20 errors
             if len(errors) > 20:
                 error_message += f"\n  ... and {len(errors) - 20} more error(s)"
             context.log.error(error_message)
@@ -152,9 +158,10 @@ class ReferentialIntegrityValidator:
                 message=error_message,
             )
 
-        context.log.info(f"Successfully validated referential integrity for {len(staging_data)} meta series records")
+        context.log.info(
+            f"Successfully validated referential integrity for {len(staging_data)} meta series records"
+        )
 
     def clear_cache(self) -> None:
         """Clear the lookup value cache."""
         self._lookup_cache.clear()
-

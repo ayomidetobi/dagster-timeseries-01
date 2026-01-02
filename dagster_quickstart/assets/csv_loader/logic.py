@@ -106,14 +106,12 @@ def process_staging_to_meta_series(
         "description",
         "is_active",
     ]
-    load_csv_to_staging_table(
-        context, clickhouse, df, "staging_meta_series", staging_columns
-    )
+    load_csv_to_staging_table(context, clickhouse, df, "staging_meta_series", staging_columns)
 
     # Step 1.5: Validate referential integrity before insertion
     context.log.info("Validating referential integrity for meta series references")
     validator = ReferentialIntegrityValidator(clickhouse)
-    
+
     # Fetch staging data for validation
     query = """
     SELECT series_code, field_type, asset_class, sub_asset_class, product_type,
@@ -125,12 +123,25 @@ def process_staging_to_meta_series(
     result = clickhouse.execute_query(query)
     staging_data = []
     if hasattr(result, "result_rows") and result.result_rows:
-        columns = ["series_code", "field_type", "asset_class", "sub_asset_class", "product_type",
-                   "data_type", "structure_type", "market_segment", "ticker_source",
-                   "region", "currency", "term", "tenor", "country"]
+        columns = [
+            "series_code",
+            "field_type",
+            "asset_class",
+            "sub_asset_class",
+            "product_type",
+            "data_type",
+            "structure_type",
+            "market_segment",
+            "ticker_source",
+            "region",
+            "currency",
+            "term",
+            "tenor",
+            "country",
+        ]
         for row in result.result_rows:
             staging_data.append(dict(zip(columns, row)))
-    
+
     validator.validate_meta_series_references(context, staging_data)
 
     # Step 2: Insert into metaSeries using SQL with LEFT JOIN-based ID resolution
@@ -201,8 +212,6 @@ def load_csv_to_staging_table(
     context.log.info(f"Successfully loaded {len(data)} rows into {staging_table_name}")
 
 
-
-
 def process_staging_to_dimensions(
     context: AssetExecutionContext,
     clickhouse: ClickHouseResource,
@@ -241,9 +250,7 @@ def process_staging_to_dimensions(
         "term",
         "tenor",
     ]
-    load_csv_to_staging_table(
-        context, clickhouse, df, "staging_lookup_tables", staging_columns
-    )
+    load_csv_to_staging_table(context, clickhouse, df, "staging_lookup_tables", staging_columns)
 
     all_results: Dict[str, Dict[str, int]] = {}
     available_columns = [col for col in LOOKUP_TABLE_COLUMNS if col in df.columns]
@@ -266,12 +273,14 @@ def process_staging_to_dimensions(
             if lookup_type in CODE_BASED_LOOKUPS:
                 code_field, name_field, check_field = CODE_BASED_LOOKUPS[lookup_type]
                 insert_fields = f"{id_column}, {code_field}, {name_field}"
-                select_fields = f"{staging_column} AS {code_field}, {staging_column} AS {name_field}"
+                select_fields = (
+                    f"{staging_column} AS {code_field}, {staging_column} AS {name_field}"
+                )
             else:  # Simple lookups: asset_class, data_type, structure_type, etc.
                 insert_fields = f"{id_column}, {name_column}"
                 select_fields = f"{staging_column} AS {name_column}"
                 check_field = name_column
-            
+
             # Generate and execute SQL (same pattern for all lookup types)
             sql = f"""
             INSERT INTO {table_name} ({insert_fields}, created_at, updated_at)
