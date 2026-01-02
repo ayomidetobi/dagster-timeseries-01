@@ -17,7 +17,7 @@ LOOKUP_TABLE_COLUMNS = [
     "country",
 ]
 
-# Processing order for lookup tables (respects dependencies)
+# Processing order for lookup tables (all independent now)
 LOOKUP_TABLE_PROCESSING_ORDER = [
     "asset_class",
     "product_type",
@@ -26,6 +26,7 @@ LOOKUP_TABLE_PROCESSING_ORDER = [
     "market_segment",
     "field_type",
     "ticker_source",
+    "sub_asset_class",
     "region",
     "currency",
     "term",
@@ -99,6 +100,16 @@ DB_COLUMNS = {
     "tenor": ("tenor_id", "tenor_code"),
     "country": ("country_id", "country_code"),
     "meta_series": ("series_id", "series_code"),
+}
+
+# Lookup types that require code fields in addition to name
+# Format: (code_field, name_field, check_field)
+# check_field determines which field to use for duplicate checking
+CODE_BASED_LOOKUPS = {
+    "currency": ("currency_code", "currency_name", "currency_code"),
+    "tenor": ("tenor_code", "tenor_name", "tenor_code"),
+    "country": ("country_code", "country_name", "country_code"),
+    "ticker_source": ("ticker_source_code", "ticker_source_name", "ticker_source_name"),
 }
 
 # Calculation types

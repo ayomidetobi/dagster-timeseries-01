@@ -125,3 +125,50 @@ class GreatExpectationsError(Exception):
     """Raised when Great Expectations operations fail."""
 
     pass
+
+
+class ReferentialIntegrityError(DatabaseError):
+    """Base exception for referential integrity violations."""
+
+    pass
+
+
+class LookupNotFoundError(ReferentialIntegrityError):
+    """Raised when a referenced lookup value does not exist."""
+
+    def __init__(self, lookup_type: str, lookup_value: str, message: str = ""):
+        self.lookup_type = lookup_type
+        self.lookup_value = lookup_value
+        if not message:
+            message = f"Lookup value '{lookup_value}' not found in {lookup_type} lookup table"
+        super().__init__(message)
+
+
+class InvalidLookupReferenceError(ReferentialIntegrityError):
+    """Raised when a meta series references an invalid lookup ID or name."""
+
+    def __init__(self, lookup_type: str, lookup_value: str, series_code: str = "", message: str = ""):
+        self.lookup_type = lookup_type
+        self.lookup_value = lookup_value
+        self.series_code = series_code
+        if not message:
+            if series_code:
+                message = f"Series '{series_code}' references invalid {lookup_type} '{lookup_value}'"
+            else:
+                message = f"Invalid {lookup_type} reference: '{lookup_value}'"
+        super().__init__(message)
+
+
+class SubAssetClassMismatchError(ReferentialIntegrityError):
+    """Raised when sub_asset_class does not match the provided asset_class."""
+
+    def __init__(self, sub_asset_class: str, asset_class: str, series_code: str = "", message: str = ""):
+        self.sub_asset_class = sub_asset_class
+        self.asset_class = asset_class
+        self.series_code = series_code
+        if not message:
+            if series_code:
+                message = f"Series '{series_code}': sub_asset_class '{sub_asset_class}' does not belong to asset_class '{asset_class}'"
+            else:
+                message = f"sub_asset_class '{sub_asset_class}' does not belong to asset_class '{asset_class}'"
+        super().__init__(message)

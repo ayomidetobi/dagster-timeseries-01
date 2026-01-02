@@ -30,12 +30,11 @@ DROP DICTIONARY IF EXISTS dict_sub_asset_class;
 CREATE DICTIONARY dict_sub_asset_class (
     sub_asset_class_id UInt32,
     sub_asset_class_name String,
-    asset_class_id UInt32,
     description Nullable(String)
 )
 PRIMARY KEY sub_asset_class_id
 SOURCE(CLICKHOUSE(
-    QUERY 'SELECT sub_asset_class_id, sub_asset_class_name, asset_class_id, description FROM subAssetClassLookup'
+    QUERY 'SELECT sub_asset_class_id, sub_asset_class_name, description FROM subAssetClassLookup'
 ))
 LAYOUT(FLAT())
 LIFETIME(MIN 3600 MAX 7200);
