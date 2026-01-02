@@ -4,11 +4,12 @@ from datetime import datetime
 from typing import Any, Dict
 
 import polars as pl
-from dagster import AssetExecutionContext, MetadataValue
+from dagster import AssetExecutionContext
 
 from dagster_quickstart.resources import ClickHouseResource, PyPDLResource
 from dagster_quickstart.utils.datetime_utils import parse_timestamp, validate_timestamp
 from dagster_quickstart.utils.exceptions import DatabaseError, PyPDLError
+from dagster_quickstart.utils.summary import AssetSummary
 from database.lookup_tables import LookupTableManager
 from database.meta_series import MetaSeriesManager
 from database.value_data import ValueDataManager
@@ -286,29 +287,19 @@ async def ingest_bloomberg_data(
                     }
                 )
 
-    # Create summary DataFrame
-    summary_data = {
-        "total_series": [len(bloomberg_series)],
-        "successful_ingestions": [len(successful_series)],
-        "failed_ingestions": [len(failed_series)],
-        "total_rows_inserted": [total_rows_inserted],
-        "target_date": [target_date.isoformat()],
-    }
-
-    context.add_output_metadata(
-        {
-            "total_series": MetadataValue.int(len(bloomberg_series)),
-            "successful_ingestions": MetadataValue.int(len(successful_series)),
-            "failed_ingestions": MetadataValue.int(len(failed_series)),
-            "total_rows_inserted": MetadataValue.int(total_rows_inserted),
-            "target_date": MetadataValue.text(target_date.isoformat()),
-            "successful_series": MetadataValue.json([s["series_code"] for s in successful_series]),
-        }
+    # Create summary using optimized AssetSummary class
+    summary = AssetSummary.for_ingestion(
+        matching_series=bloomberg_series,
+        successful_series=successful_series,
+        failed_series=failed_series,
+        total_rows_inserted=total_rows_inserted,
+        target_date=target_date,
     )
+    summary.add_to_context(context)
 
     context.log.info(
         f"Bloomberg ingestion complete: {len(successful_series)} successful, "
         f"{len(failed_series)} failed, {total_rows_inserted} total rows inserted"
     )
 
-    return pl.DataFrame(summary_data)
+    return summary.to_polars_dataframe()

@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any
 
 import pandas as pd
-from dagster import AssetExecutionContext, MetadataValue
+from dagster import AssetExecutionContext
 
 from dagster_quickstart.resources import ClickHouseResource
 from dagster_quickstart.utils.constants import (
@@ -20,6 +20,7 @@ from dagster_quickstart.utils.helpers import (
     update_calculation_log_on_error,
     update_calculation_log_on_success,
 )
+from dagster_quickstart.utils.summary import AssetSummary
 from database.dependency import CalculationLogManager, DependencyManager
 from database.meta_series import MetaSeriesManager
 
@@ -118,13 +119,14 @@ def calculate_sma_series_logic(
         # Update calculation log
         update_calculation_log_on_success(calc_manager, calc_id, len(output_df))
 
-        context.add_output_metadata(
-            {
-                "rows_calculated": MetadataValue.int(len(output_df)),
-                "calculation_id": MetadataValue.int(calc_id),
-                "window_size": MetadataValue.int(window),
-            }
+        # Create summary using optimized AssetSummary class
+        summary = AssetSummary.for_calculation(
+            rows_calculated=len(output_df),
+            calculation_id=calc_id,
+            target_date=target_date,
+            additional_metadata={"window_size": window},
         )
+        summary.add_to_context(context)
 
         return output_df
 
@@ -232,13 +234,14 @@ def calculate_weighted_composite_logic(
         # Update calculation log
         update_calculation_log_on_success(calc_manager, calc_id, len(output_df))
 
-        context.add_output_metadata(
-            {
-                "rows_calculated": MetadataValue.int(len(output_df)),
-                "calculation_id": MetadataValue.int(calc_id),
-                "num_parents": MetadataValue.int(len(parent_deps)),
-            }
+        # Create summary using optimized AssetSummary class
+        summary = AssetSummary.for_calculation(
+            rows_calculated=len(output_df),
+            calculation_id=calc_id,
+            target_date=target_date,
+            additional_metadata={"num_parents": len(parent_deps)},
         )
+        summary.add_to_context(context)
 
         return output_df
 
