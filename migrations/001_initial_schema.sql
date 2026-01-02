@@ -15,7 +15,6 @@ ORDER BY (asset_class_id);
 CREATE TABLE IF NOT EXISTS productTypeLookup (
     product_type_id UInt32,
     product_type_name String,
-    is_derived UInt8 DEFAULT 0,
     description Nullable(String),
     created_at DateTime64(6) DEFAULT now64(6),
     updated_at DateTime64(6) DEFAULT now64(6)
@@ -67,7 +66,6 @@ ORDER BY (market_segment_id);
 CREATE TABLE IF NOT EXISTS fieldTypeLookup (
     field_type_id UInt32,
     field_type_name String,
-    field_type_code String,
     description Nullable(String),
     created_at DateTime64(6) DEFAULT now64(6),
     updated_at DateTime64(6) DEFAULT now64(6)

@@ -1,3 +1,160 @@
+
+
+
+Role & Context
+
+You are a principal data platform engineer with deep expertise in:
+	•	ClickHouse (MergeTree, Dictionaries, Materialized Views, Projections)
+	•	Dagster orchestration
+	•	Financial / Bloomberg-style market data systems
+
+The ClickHouse database is currently empty.
+Schema changes are managed exclusively via clickhouse-migration.
+The system must be designed correctly from day one.
+
+⸻
+
+🎯 Objective
+
+Design a clean, production-ready architecture to:
+	1.	Load a single denormalized CSV containing multiple lookup domains:
+    for example
+	•	product type
+	•	data class
+	•	field
+	•	asset class
+	•	sub-asset class
+	2.	Normalize the CSV into separate dimension tables
+	3.	Assign stable surrogate IDs to each dimension use simple id not cityhash for example rowNumberInAllBlocks() AS id,
+	4.	Expose each dimension as a ClickHouse Dictionary
+	5.	Enforce referential integrity without foreign key support
+	6.	Integrate with Dagster assets and backfills
+	7.	Use ClickHouse-native features wherever possible
+
+
+
+📤 Expected Output
+
+Produce:
+
+1️⃣ Schema Design
+	•	Staging table for CSV ingestion
+	•	Dimension tables with surrogate IDs
+	•	Fact table examples using only IDs
+	•	Dictionary definitions per dimension
+
+2️⃣ ClickHouse Migration Files
+	•	Ordered migration strategy
+	•	One migration per concern:
+	•	staging
+	•	dimensions
+	•	dictionaries
+	•	materialized views
+	•	Safe re-runnability
+
+
+
+lookup_csv
+  ↓
+staging_lookups
+  ↓
+dimension_tables
+  ↓
+clickhouse_dictionaries
+
+Include:
+	•	Asset dependencies
+	•	Idempotent execution
+	•	Backfill support
+
+⸻
+
+🔒 Referential Integrity (Without FK Support)
+
+Since ClickHouse does not enforce foreign keys, design explicit safeguards:
+
+Required mechanisms:
+	•	Dictionary-based existence checks at ingest time
+	•	Reject or quarantine rows with unknown IDs
+	•	Pre-insert validation queries
+	•	Dagster asset checks or sensors
+	•	Orphan detection SQL queries
+
+Example expectations:
+	•	No fact row may reference a non-existent dimension ID
+	•	Invalid records must never silently land in fact tables
+
+⸻
+
+🧠 Design Constraints
+	•	No joins on strings in fact tables
+	•	All fact tables reference IDs only
+	•	All dimension tables are append-only
+	•	IDs must be deterministic and reproducible
+	•	Lookup changes must not rewrite history
+	•	Everything must be backfill-safe
+
+⸻
+
+📌 Required Design Justifications
+
+
+
+⚙️ clickhouse-migration Requirements
+	•	Migrations must be idempotent
+	•	No manual DDL outside migrations
+	•	Schema objects must be created in correct dependency order
+	•	Dictionary lifetimes must be explicitly defined
+	•	Migration rollback strategy must be stated
+
+⸻
+
+📎 Important Recommendations Section
+
+Include a section titled:
+
+“Non-Negotiable Financial Data Rules”
+
+Cover:
+	•	Instrument ID over symbol
+	•	Dictionaries over joins
+	•	Partitioning strategy
+	•	Corporate actions readiness
+	•	Deterministic rebuilds
+	•	Auditability & lineage
+
+⸻
+
+🧪 Validation & Data Quality
+
+Provide:
+	•	SQL validation queries
+	•	Dictionary coverage checks
+	•	Row-count expectations
+	•	Dagster asset checks
+
+⸻
+
+🏁 Tone & Output Style
+	•	Write like a principal engineer
+	•	Prefer SQL and architecture over prose
+	•	Be explicit and deterministic
+	•	No placeholders or hand-waving
+
+⸻
+
+🚀 Final Instruction
+
+Deliver a fully ClickHouse-native, migration-safe, Dagster-orchestrated design suitable for long-term financial market data storage and analytics.
+
+⸻
+
+
+
+
+Just tell me the next step.
+
+
 You are a senior data platform engineer specializing in Dagster.
 
 When writing code:
@@ -27,3 +184,5 @@ Never use print()
 Fail loudly with domain-specific exceptions
 
 Code must be production-grade, deterministic, and self-healing.
+
+follow good folder structure 
