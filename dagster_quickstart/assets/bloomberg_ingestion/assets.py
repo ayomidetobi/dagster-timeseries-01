@@ -48,8 +48,8 @@ def ingest_bloomberg_data_pypdl(
 
     This asset:
     1. Gets the metaSeries by series_id from the partition key
-    2. Gets the field_type_code from field_type lookup
-    3. Constructs data_source as "bloomberg/ts/{field_type_code}"
+    2. Gets the field_type_name from field_type lookup (should contain Bloomberg field code like "PX_LAST")
+    3. Constructs data_source as "bloomberg/ts/{field_type_name}"
     4. Uses ticker as data_code
     5. Fetches data from Bloomberg via PyPDL for the partition date
     6. Saves data to ClickHouse valueData table

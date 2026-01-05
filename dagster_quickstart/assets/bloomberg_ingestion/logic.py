@@ -163,7 +163,7 @@ def validate_series_metadata(
     return ticker, field_type_id, None
 
 
-def get_field_type_code(
+def get_field_type_name(
     lookup_manager: LookupTableManager,
     validator: ReferentialIntegrityValidator,
     field_type_id: int,
@@ -171,10 +171,10 @@ def get_field_type_code(
     series_code: str,
     context: AssetExecutionContext,
 ) -> Optional[str]:
-    """Get field type code from lookup table and validate referential integrity.
+    """Get field type name from lookup table and validate referential integrity.
 
     Uses LookupTableManager to get the field type by ID, then validates
-    the field_type_code exists in the lookup table using ReferentialIntegrityValidator.
+    the field_type_name exists in the lookup table using ReferentialIntegrityValidator.
 
     Args:
         lookup_manager: Lookup table manager instance
@@ -185,7 +185,7 @@ def get_field_type_code(
         context: Dagster execution context for logging
 
     Returns:
-        Field type code or None if not found or invalid
+        Field type name or None if not found or invalid
     """
     # Get field type by ID using LookupTableManager
     field_type = lookup_manager.get_field_type_by_id(field_type_id)
@@ -194,37 +194,31 @@ def get_field_type_code(
         context.log.warning(f"Could not find field_type for series {series_code}, skipping")
         return None
 
-    field_code = field_type.get("field_type_code")
-    if not field_code:
-        context.log.warning(f"Field type {field_type_id} has no field_type_code, skipping")
+    field_name = field_type.get("field_type_name")
+    if not field_name:
+        context.log.warning(f"Field type {field_type_id} has no field_type_name, skipping")
         return None
 
-    # Validate referential integrity: check that field_type_code exists in lookup table
-    # Since field_type is not in CODE_BASED_LOOKUPS, we validate by checking
-    # if the field_type_code exists in the lookup table directly
-    from dagster_quickstart.utils.constants import DB_TABLES
-
-    table_name = DB_TABLES["field_type"]
-    query = (
-        f"SELECT field_type_code FROM {table_name} WHERE field_type_code = {{code:String}} LIMIT 1"
+    # Validate referential integrity using ReferentialIntegrityValidator
+    validation_error = validator.validate_lookup_reference(
+        "field_type", field_name, series_code
     )
-    result = validator.clickhouse.execute_query(query, parameters={"code": field_code})
-    if not (hasattr(result, "result_rows") and result.result_rows):
+    if validation_error:
         context.log.warning(
-            f"Invalid field_type_code '{field_code}' for series {series_code}, skipping"
+            f"Invalid field_type_name reference for series {series_code}: {validation_error}"
         )
         return None
 
-    return field_code
+    return field_name
 
 
 def build_pypdl_request_params(
-    field_code: str, ticker: str, config: BloombergIngestionConfig, target_date: datetime
+    field_name: str, ticker: str, config: BloombergIngestionConfig, target_date: datetime
 ) -> Tuple[str, str, datetime, datetime]:
     """Build PyPDL request parameters.
 
     Args:
-        field_code: Field type code
+        field_name: Field type name (should be Bloomberg field code like "PX_LAST")
         ticker: Ticker symbol
         config: Bloomberg ingestion configuration
         target_date: Target date for ingestion
@@ -232,8 +226,9 @@ def build_pypdl_request_params(
     Returns:
         Tuple of (data_source, data_code, start_date, end_date)
     """
-    # PyPDL data_source format: "bloomberg/ts/{field_type_code}"
-    data_source = f"bloomberg/ts/{field_code}"
+    # PyPDL data_source format: "bloomberg/ts/{field_type_name}"
+    # Note: field_type_name in the database should contain Bloomberg field codes (e.g., "PX_LAST")
+    data_source = f"bloomberg/ts/{field_name}"
     data_code = ticker
 
     # Use config dates if provided, otherwise use partition date
@@ -537,17 +532,17 @@ def ingest_bloomberg_data_for_series(
     if error_reason or ticker is None or field_type_id is None:
         return create_skipped_dataframe(series_id, error_reason or "missing metadata")
 
-    # Get field type code using LookupTableManager and validate with ReferentialIntegrityValidator
+    # Get field type name using LookupTableManager and validate with ReferentialIntegrityValidator
     validator = ReferentialIntegrityValidator(clickhouse)
-    field_code = get_field_type_code(
+    field_name = get_field_type_name(
         lookup_manager, validator, field_type_id, series_id, series_code, context
     )
-    if not field_code:
-        return create_skipped_dataframe(series_id, "field_type_code not found")
+    if not field_name:
+        return create_skipped_dataframe(series_id, "field_type_name not found")
 
     # Build PyPDL request parameters
     data_source, data_code, start_date, end_date = build_pypdl_request_params(
-        field_code, ticker, config, target_date
+        field_name, ticker, config, target_date
     )
 
     # Fetch data from Bloomberg via PyPDL
