@@ -19,6 +19,7 @@ from dagster_quickstart.utils.partitions import (
 )
 
 from .config import BloombergIngestionConfig
+from .dummy_clickhouse import DummyClickHouseResource
 from .logic import ingest_bloomberg_data_for_series
 
 
@@ -90,6 +91,12 @@ def ingest_bloomberg_data_pypdl(
     target_date = get_partition_date(date_key)
 
     context.log.info("Processing partition: series_id=%s, date=%s", series_id, target_date.date())
+
+    # Use dummy ClickHouse data if configured
+    # Type ignore needed because DummyClickHouseResource implements the same interface
+    if config.use_dummy_data:
+        context.log.info("Using dummy ClickHouse data for testing")
+        clickhouse = DummyClickHouseResource()  # type: ignore
 
     # Run ingestion function for single series and date
     return ingest_bloomberg_data_for_series(

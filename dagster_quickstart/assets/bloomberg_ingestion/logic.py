@@ -200,9 +200,7 @@ def get_field_type_name(
         return None
 
     # Validate referential integrity using ReferentialIntegrityValidator
-    validation_error = validator.validate_lookup_reference(
-        "field_type", field_name, series_code
-    )
+    validation_error = validator.validate_lookup_reference("field_type", field_name, series_code)
     if validation_error:
         context.log.warning(
             f"Invalid field_type_name reference for series {series_code}: {validation_error}"
