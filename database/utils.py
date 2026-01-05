@@ -50,6 +50,31 @@ def get_by_name(
     return None
 
 
+def get_by_id(
+    clickhouse: ClickHouseResource,
+    table_name: str,
+    id_column: str,
+    record_id: int,
+) -> Optional[Dict[str, Any]]:
+    """Get a record by ID from any lookup table.
+
+    Args:
+        clickhouse: ClickHouse resource
+        table_name: Name of the table
+        id_column: Name of the ID column
+        record_id: ID to search for
+
+    Returns:
+        Dictionary with record data or None if not found
+    """
+    query = f"SELECT * FROM {table_name} WHERE {id_column} = {{id:UInt32}} LIMIT 1"
+    result = clickhouse.execute_query(query, parameters={"id": record_id})
+    if hasattr(result, "result_rows") and result.result_rows:
+        columns = result.column_names
+        return dict(zip(columns, result.result_rows[0]))
+    return None
+
+
 def execute_update_query(
     clickhouse: ClickHouseResource,
     table_name: str,
