@@ -359,8 +359,7 @@ class AssetSummary:
         # Add successful series codes if present
         if self._successful_series:
             series_codes = [
-                s.get("series_code", s.get("series_id", "unknown"))
-                for s in self._successful_series
+                s.get("series_code", s.get("series_id", "unknown")) for s in self._successful_series
             ]
             metadata["successful_series"] = MetadataValue.json(series_codes)
 
@@ -489,4 +488,3 @@ class AssetSummary:
             asset_type="calculation",
             additional_metadata=metadata,
         )
-

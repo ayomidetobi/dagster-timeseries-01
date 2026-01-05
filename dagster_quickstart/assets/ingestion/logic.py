@@ -427,8 +427,8 @@ def ingest_data_for_ticker_source(
 
     # Raise exception if there are validation errors to mark asset as failed
     if validation_errors:
-        error_summary = (
-            f"Validation failed for {len(validation_errors)} series(s): " + "; ".join(validation_errors)
+        error_summary = f"Validation failed for {len(validation_errors)} series(s): " + "; ".join(
+            validation_errors
         )
         context.log.error(error_summary)
         # Summary already has failed series tracked

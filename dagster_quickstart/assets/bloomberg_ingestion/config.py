@@ -7,4 +7,3 @@ class BloombergIngestionConfig(Config):
     """Configuration for Bloomberg data ingestion."""
 
     force_refresh: bool = False  # If True, delete existing data for the partition date before inserting (ensures idempotency when re-running a partition). If False, skip insertion if data already exists for the date.
-    max_concurrent: int = 3  # Maximum concurrent PyPDL requests (overrides resource default if set)

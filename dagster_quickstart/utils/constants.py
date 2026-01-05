@@ -141,7 +141,6 @@ DEFAULT_BATCH_SIZE = 10000  # Default batch size for database insertions
 PYPDL_DEFAULT_HOST = "gnp-histo.europe.echonet"
 PYPDL_DEFAULT_PORT = 12002
 PYPDL_DEFAULT_USERNAME = "jess05 Macro Quant"
-PYPDL_DEFAULT_MAX_CONCURRENT = 3  # Conservative default for concurrent requests
 
 # Retry policy constants
 RETRY_POLICY_MAX_RETRIES_DEFAULT = 3

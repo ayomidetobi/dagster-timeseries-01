@@ -1,16 +1,13 @@
 """PyPDL data ingestion resource using pyeqdr.pypdl library."""
 
-import asyncio
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from dagster import ConfigurableResource, get_dagster_logger
 from decouple import config
 
 from dagster_quickstart.utils.constants import (
     PYPDL_DEFAULT_HOST,
-    PYPDL_DEFAULT_MAX_CONCURRENT,
     PYPDL_DEFAULT_PORT,
     PYPDL_DEFAULT_USERNAME,
 )
@@ -29,59 +26,32 @@ class PyPDLResource(ConfigurableResource):
     """PyPDL API resource using pyeqdr.pypdl library.
 
     This resource uses PyPDL to fetch time-series data from Bloomberg.
-    It supports batch requests for multiple series with async execution.
+    Dagster handles concurrency through dynamic partitions.
 
     Retries and error handling are managed by Dagster's retry policies
     at the asset level, not within this resource.
     """
 
-    # PyPDL connection configuration
-    host: str = PYPDL_DEFAULT_HOST
-    port: int = PYPDL_DEFAULT_PORT
-    username: str = PYPDL_DEFAULT_USERNAME
-    max_concurrent: int = PYPDL_DEFAULT_MAX_CONCURRENT
-
-    def __init__(self, **data):
-        """Initialize PyPDL resource with optional configuration."""
-        super().__init__(**data)
-        # Try to get from environment variables if not provided
-        if self.host == PYPDL_DEFAULT_HOST:
-            self.host = config("PYPDL_HOST", default=self.host)
-        if self.port == PYPDL_DEFAULT_PORT:
-            self.port = config("PYPDL_PORT", default=self.port, cast=int)
-        if self.username == PYPDL_DEFAULT_USERNAME:
-            self.username = config("PYPDL_USERNAME", default=self.username)
-        if self.max_concurrent == PYPDL_DEFAULT_MAX_CONCURRENT:
-            self.max_concurrent = config(
-                "PYPDL_MAX_CONCURRENT", default=self.max_concurrent, cast=int
-            )
-
-    async def fetch_time_series_batch(
+    def fetch_time_series(
         self,
-        series_list: List[Dict[str, Any]],
+        data_code: str,
+        data_source: str,
         start_date: datetime,
         end_date: datetime,
-        max_concurrent: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
-        """Fetch time-series data for multiple series in batch with async execution.
+        """Fetch time-series data for a single series.
 
         Args:
-            series_list: List of dicts with keys:
-                - data_code: The ticker/code (e.g., "FR_BNP", "AAPL US Equity")
-                - data_source: The data source path (e.g., "bloomberg/ts/PX_LAST")
+            data_code: The ticker/code (e.g., "FR_BNP", "AAPL US Equity")
+            data_source: The data source path (e.g., "bloomberg/ts/PX_LAST")
             start_date: Start date for data retrieval
             end_date: End date for data retrieval
-            max_concurrent: Optional override for maximum concurrent batches.
-                If None, uses the resource's default max_concurrent value.
-                This parameter allows per-call concurrency control without mutating
-                the shared resource instance (thread-safe).
 
         Returns:
-            List of dicts with keys: data_code, data_source, data (list of {timestamp, value})
+            List of data point dicts with timestamp and value
 
         Raises:
             PyPDLError: If PyPDL is not installed or execution fails
-            PyPDLConnectionError: If connection to PyPDL server fails
             PyPDLExecutionError: If PyPDL execution fails
         """
         if pypdl is None:
@@ -89,102 +59,14 @@ class PyPDLResource(ConfigurableResource):
                 "pyeqdr.pypdl is not installed. Please install it with: pip install pyeqdr"
             )
 
-        # Use provided max_concurrent or fall back to resource default
-        # This avoids mutating the shared resource instance (thread-safe)
-        effective_max_concurrent = (
-            max_concurrent if max_concurrent is not None else self.max_concurrent
-        )
-
-        # Split series_list into batches for concurrent execution
-        batches = _split_into_batches(series_list, effective_max_concurrent)
-        logger.info(
-            f"Processing {len(series_list)} series in {len(batches)} batches "
-            f"(max_concurrent={effective_max_concurrent})"
-        )
-
-        # Execute batches concurrently using thread pool for blocking PyPDL calls
-        loop = asyncio.get_running_loop()
-        with ThreadPoolExecutor(max_workers=effective_max_concurrent) as executor:
-            tasks = [
-                loop.run_in_executor(
-                    executor,
-                    self._fetch_batch_sync,
-                    batch,
-                    start_date,
-                    end_date,
-                    batch_idx,
-                )
-                for batch_idx, batch in enumerate[List[Dict[str, Any]]](batches)
-            ]
-            batch_results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        # Process results and handle errors
-        all_results: List[Dict[str, Any]] = []
-        errors: List[Exception] = []
-
-        for batch_idx, batch_result in enumerate[List[Dict[str, Any]] | BaseException](
-            batch_results
-        ):
-            if isinstance(batch_result, Exception):
-                logger.error(
-                    f"Batch {batch_idx} failed: {batch_result}",
-                    extra={"batch_index": batch_idx, "batch_size": len(batches[batch_idx])},
-                )
-                errors.append(batch_result)
-            elif isinstance(batch_result, list):
-                all_results.extend(batch_result)
-                logger.info(
-                    f"Batch {batch_idx} succeeded: {len(batch_result)} series fetched",
-                    extra={"batch_index": batch_idx, "series_count": len(batch_result)},
-                )
-
-        # If all batches failed, raise an exception
-        if errors and not all_results:
-            error_msg = f"All {len(batches)} PyPDL batches failed"
-            logger.error(error_msg, extra={"error_count": len(errors)})
-            raise PyPDLExecutionError(error_msg) from errors[0]
-
-        # If some batches failed, log warning but continue with successful results
-        if errors:
-            logger.warning(
-                f"{len(errors)} batches failed but {len(all_results)} series succeeded",
-                extra={"failed_batches": len(errors), "successful_series": len(all_results)},
-            )
-
-        return all_results
-
-    def _fetch_batch_sync(
-        self,
-        batch: List[Dict[str, Any]],
-        start_date: datetime,
-        end_date: datetime,
-        batch_idx: int,
-    ) -> List[Dict[str, Any]]:
-        """Synchronously fetch a batch of series using PyPDL.
-
-        This is a blocking method that will be run in a thread pool.
-
-        Args:
-            batch: List of series info dicts
-            start_date: Start date for data retrieval
-            end_date: End date for data retrieval
-            batch_idx: Batch index for logging
-
-        Returns:
-            List of result dicts
-
-        Raises:
-            PyPDLConnectionError: If connection fails
-            PyPDLExecutionError: If execution fails
-        """
         try:
-            pdl_dict = _build_pdl_dict(batch, start_date, end_date, batch_idx)
-            program_name = f"r_batch_{batch_idx}"
-            result_key = f"z_batch_{batch_idx}"
+            pdl_dict = _build_pdl_dict_single(data_code, data_source, start_date, end_date)
+            program_name = "r_series"
+            result_key = "z_series"
 
             logger.info(
-                f"Executing PyPDL program for batch {batch_idx} ({len(batch)} series)",
-                extra={"batch_index": batch_idx, "series_count": len(batch)},
+                f"Executing PyPDL program for {data_code} ({data_source})",
+                extra={"data_code": data_code, "data_source": data_source},
             )
 
             out_d = pypdl.gnp_exec(
@@ -195,212 +77,103 @@ class PyPDLResource(ConfigurableResource):
                 self.username,
             )
 
-            return _process_pypdl_results(out_d, batch, batch_idx, result_key)
+            return _process_pypdl_result_single(out_d, data_code, data_source, result_key)
 
         except Exception as e:
             logger.error(
-                f"PyPDL execution failed for batch {batch_idx}: {e}",
-                extra={"batch_index": batch_idx, "error": str(e)},
+                f"PyPDL execution failed for {data_code}: {e}",
+                extra={"data_code": data_code, "data_source": data_source, "error": str(e)},
             )
-            raise PyPDLExecutionError(f"PyPDL execution failed for batch {batch_idx}") from e
+            raise PyPDLExecutionError(f"PyPDL execution failed for {data_code}") from e
 
 
-def _split_into_batches(
-    series_list: List[Dict[str, Any]], max_concurrent: int
-) -> List[List[Dict[str, Any]]]:
-    """Split series list into batches for concurrent processing.
-
-    Args:
-        series_list: List of series info dicts
-        max_concurrent: Maximum number of concurrent batches
-
-    Returns:
-        List of batches
-    """
-    if not series_list:
-        return []
-
-    batch_size = max(1, len(series_list) // max_concurrent)
-    return [
-        series_list[batch_start_idx : batch_start_idx + batch_size]
-        for batch_start_idx in range(0, len(series_list), batch_size)
-    ]
-
-
-def _build_pdl_dict(
-    batch: List[Dict[str, Any]],
+def _build_pdl_dict_single(
+    data_code: str,
+    data_source: str,
     start_date: datetime,
     end_date: datetime,
-    batch_idx: int,
 ) -> Dict[str, Any]:
-    """Build PyPDL dictionary for a batch of series.
+    """Build PyPDL dictionary for a single series.
 
     Args:
-        batch: List of series info dicts
+        data_code: The ticker/code
+        data_source: The data source path
         start_date: Start date for data retrieval
         end_date: End date for data retrieval
-        batch_idx: Batch index
 
     Returns:
         PyPDL dictionary
-
-    Raises:
-        ValueError: If required fields are missing
     """
     pdl_dict: Dict[str, Any] = {}
-    exec_list: List[str] = []
 
     date_1_str = start_date.strftime("%Y%m%d")
     date_2_str = end_date.strftime("%Y%m%d")
 
-    for i, series_info in enumerate(batch):
-        data_code = series_info.get("data_code")
-        data_source = series_info.get("data_source")
-
-        if not data_code or not data_source:
-            logger.warning(
-                f"Batch {batch_idx}: Skipping series {i}: missing data_code or data_source",
-                extra={"batch_index": batch_idx, "series_index": i},
-            )
-            continue
-
-        name = f"r{batch_idx}_{i}"
-        result = f"z{batch_idx}_{i}"
-
-        pypdl.pdl_make_object(
-            pdl_dict,
-            name,
-            "py_get_time_serie",
-            {
-                "date_1": pypdl.to_date(date_1_str),
-                "date_2": pypdl.to_date(date_2_str),
-                "data_source": data_source,
-                "data_code": data_code,
-                "result": result,
-            },
-        )
-
-        exec_list.append(name)
-
-    if not exec_list:
-        raise ValueError(f"Batch {batch_idx}: No valid series to fetch")
-
-    # Create program object
-    program_name = f"r_batch_{batch_idx}"
+    # Create single series object
     pypdl.pdl_make_object(
         pdl_dict,
-        program_name,
-        "program",
+        "r_series",
+        "py_get_time_serie",
         {
-            "exec_list": exec_list,
-            "result": f"z_batch_{batch_idx}",
+            "date_1": pypdl.to_date(date_1_str),
+            "date_2": pypdl.to_date(date_2_str),
+            "data_source": data_source,
+            "data_code": data_code,
+            "result": "z_series",
         },
     )
 
     return pdl_dict
 
 
-def _process_pypdl_results(
+def _process_pypdl_result_single(
     out_d: Dict[str, Any],
-    batch: List[Dict[str, Any]],
-    batch_idx: int,
+    data_code: str,
+    data_source: str,
     result_key: str,
 ) -> List[Dict[str, Any]]:
-    """Process PyPDL execution results and extract data points.
+    """Process PyPDL execution result and extract data points for a single series.
 
     Args:
         out_d: PyPDL output dictionary
-        batch: Original batch of series info dicts
-        batch_idx: Batch index
+        data_code: Data code for the series
+        data_source: Data source for the series
         result_key: Result key prefix
 
     Returns:
-        List of result dicts with data points
+        List of data point dicts with timestamp and value
     """
-    # Process errors first
+    # Check for errors
     error_index_list = out_d.get(f"{result_key}.error_index_list")
-    valid_indices = _get_valid_indices(len(batch), error_index_list, batch_idx, out_d)
+    if error_index_list:
+        error_stack_key = f"{result_key}.error_stack_1"
+        error_stack_list = out_d.get(error_stack_key, [])
+        error_stack = ", ".join(str(item) for item in error_stack_list) if error_stack_list else ""
+        logger.error(
+            f"PyPDL request failed for {data_code}",
+            extra={"data_code": data_code, "data_source": data_source, "error_stack": error_stack},
+        )
+        raise PyPDLExecutionError(f"PyPDL request failed for {data_code}: {error_stack}")
 
-    # Build series mapping
-    series_mapping = {
-        f"z{batch_idx}_{item_index}": {
-            "data_code": batch[item_index]["data_code"],
-            "data_source": batch[item_index]["data_source"],
-        }
-        for item_index in valid_indices
-    }
+    # Get data
+    date_list = out_d.get(f"{result_key}.date_list", [])
+    value_list = out_d.get(f"{result_key}.value_list", [])
 
-    # Process successful results
-    results: List[Dict[str, Any]] = []
-    for result_name in series_mapping.keys():
-        series_info = series_mapping[result_name]
-        data_code = series_info["data_code"]
-        data_source = series_info["data_source"]
+    if not date_list or not value_list:
+        logger.warning(
+            f"No data for {data_code} ({data_source})",
+            extra={"data_code": data_code, "data_source": data_source},
+        )
+        return []
 
-        date_list = out_d.get(f"{result_name}.date_list", [])
-        value_list = out_d.get(f"{result_name}.value_list", [])
+    data_points = _convert_to_data_points(date_list, value_list, data_code)
+    if data_points:
+        logger.info(
+            f"Fetched {len(data_points)} data points for {data_code}",
+            extra={"data_code": data_code, "data_point_count": len(data_points)},
+        )
 
-        if not date_list or not value_list:
-            logger.warning(
-                f"No data for {data_code} ({data_source})",
-                extra={"data_code": data_code, "data_source": data_source},
-            )
-            continue
-
-        data_points = _convert_to_data_points(date_list, value_list, data_code)
-        if data_points:
-            results.append(
-                {
-                    "data_code": data_code,
-                    "data_source": data_source,
-                    "data": data_points,
-                }
-            )
-            logger.info(
-                f"Fetched {len(data_points)} data points for {data_code}",
-                extra={"data_code": data_code, "data_point_count": len(data_points)},
-            )
-
-    return results
-
-
-def _get_valid_indices(
-    batch_size: int, error_index_list: Any, batch_idx: int, out_d: Dict[str, Any]
-) -> List[int]:
-    """Get valid indices after removing error indices.
-
-    Args:
-        batch_size: Size of the batch
-        error_index_list: List of error indices from PyPDL
-        batch_idx: Batch index for logging
-        out_d: PyPDL output dictionary for error details
-
-    Returns:
-        List of valid indices
-    """
-    if not error_index_list:
-        return list(range(batch_size))
-
-    error_indices = set(int(error_idx) for error_idx in error_index_list)
-    result_key = f"z_batch_{batch_idx}"
-
-    for error_idx in sorted(error_indices, reverse=True):
-        if 0 <= error_idx - 1 < batch_size:
-            error_stack_key = f"{result_key}.error_stack_{error_idx}"
-            error_stack_list = out_d.get(error_stack_key, [])
-            error_stack = (
-                ", ".join(str(item) for item in error_stack_list) if error_stack_list else ""
-            )
-            logger.error(
-                f"Batch {batch_idx}: Request {error_idx - 1} failed",
-                extra={
-                    "batch_index": batch_idx,
-                    "error_index": error_idx - 1,
-                    "error_stack": error_stack,
-                },
-            )
-
-    return [item_index for item_index in range(batch_size) if item_index + 1 not in error_indices]
+    return data_points
 
 
 def _convert_to_data_points(
