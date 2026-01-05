@@ -1,7 +1,3 @@
--- Staging table for CSV ingestion of lookup table data
--- This table accepts denormalized CSV data containing all lookup domain columns
--- Data flows: lookup_csv -> staging_lookup_tables -> dimension_tables -> dictionaries
-
 CREATE TABLE IF NOT EXISTS staging_lookup_tables (
     asset_class Nullable(String),
     product_type Nullable(String),

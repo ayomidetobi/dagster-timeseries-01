@@ -1,6 +1,7 @@
 """Pydantic models for data validation and schema enforcement."""
 
 from datetime import datetime
+from decimal import Decimal
 from enum import Enum
 from typing import List, Optional
 
@@ -39,13 +40,13 @@ class CalculationStatus(str, Enum):
 class TickerSource(str, Enum):
     """Ticker source enumeration."""
 
-    BLOOMBERG = "BLOOMBERG"
-    HAWKEYE = "HAWKEYE"
+    BLOOMBERG = "Bloomberg"
+    HAWKEYE = "Hawkeye"
     LSEG = "LSEG"
-    RAMP = "RAMP"
-    ONETICK = "ONETICK"
-    MANUAL_ENTRY = "MANUAL_ENTRY"
-    INTERNAL = "INTERNAL"
+    RAMP = "Ramp"
+    ONETICK = "OneTick"
+    MANUAL_ENTRY = "Manual Entry"
+    INTERNAL = "Internal"
 
 
 # Lookup Table Models
@@ -244,14 +245,14 @@ class TimeSeriesValue(BaseModel):
 
     series_id: int
     timestamp: datetime
-    value: float
+    value: Decimal
 
-    @field_validator("value")
+    @field_validator("value", mode="after")
     @classmethod
-    def validate_value(cls, v: float) -> float:
-        """Validate value is finite."""
-        if not (v == v and abs(v) != float("inf")):
-            raise ValueError("Value must be finite")
+    def must_have_exactly_6_dp(cls, v: Decimal) -> Decimal:
+        """Ensure value has exactly 6 decimal places."""
+        if abs(int(v.as_tuple().exponent)) != 6:
+            raise ValueError(f"value '{v}' must be formatted with exactly 6 decimal places")
         return v
 
 

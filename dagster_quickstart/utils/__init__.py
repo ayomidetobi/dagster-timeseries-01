@@ -43,6 +43,7 @@ from dagster_quickstart.utils.helpers import (
     update_calculation_log_on_success,
     validate_csv_columns,
 )
+from dagster_quickstart.utils.summary import AssetSummary
 
 __all__ = [
     # Exceptions
@@ -81,4 +82,6 @@ __all__ = [
     "update_calculation_log_on_success",
     "update_calculation_log_on_error",
     "is_empty_row",
+    # Summary
+    "AssetSummary",
 ]

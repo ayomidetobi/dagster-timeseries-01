@@ -1,6 +1,7 @@
 """Reusable helper functions for Dagster assets."""
 
 from datetime import datetime, timedelta
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -17,6 +18,18 @@ from dagster_quickstart.utils.exceptions import (
 from database.dependency import CalculationLogManager
 from database.meta_series import MetaSeriesManager
 from database.models import CalculationLogBase, CalculationStatus, DataSource
+
+
+def round_six_dp(value: float | Decimal) -> Decimal:
+    """Round a number to exactly 6 decimal places.
+
+    Args:
+        value: Number to round (float or Decimal)
+
+    Returns:
+        Decimal value rounded to exactly 6 decimal places using ROUND_HALF_UP
+    """
+    return Decimal(value).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
 
 
 def safe_int(value: Any, field_name: str, required: bool = True) -> Optional[int]:

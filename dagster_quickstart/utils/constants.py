@@ -1,23 +1,7 @@
 """Constants used across Dagster assets."""
 
-# Lookup table column names
-LOOKUP_TABLE_COLUMNS = [
-    "asset_class",
-    "product_type",
-    "sub_asset_class",
-    "data_type",
-    "structure_type",
-    "market_segment",
-    "field_type",
-    "ticker_source",
-    "region",
-    "currency",
-    "term",
-    "tenor",
-    "country",
-]
-
-# Processing order for lookup tables (respects dependencies)
+# Processing order for lookup tables (all independent now)
+# This is the source of truth for lookup table types and their processing order
 LOOKUP_TABLE_PROCESSING_ORDER = [
     "asset_class",
     "product_type",
@@ -26,6 +10,7 @@ LOOKUP_TABLE_PROCESSING_ORDER = [
     "market_segment",
     "field_type",
     "ticker_source",
+    "sub_asset_class",
     "region",
     "currency",
     "term",
@@ -33,13 +18,35 @@ LOOKUP_TABLE_PROCESSING_ORDER = [
     "country",
 ]
 
-# Required columns for meta series CSV
+# Lookup table column names (derived from processing order)
+# Used for CSV column validation - same items as processing order, can be in any order
+LOOKUP_TABLE_COLUMNS = list(LOOKUP_TABLE_PROCESSING_ORDER)
+
+# Meta series specific columns (non-lookup fields)
+# This is the source of truth for all meta series fields
+META_SERIES_SPECIFIC_COLUMNS = [
+    "series_name",
+    "series_code",
+    "data_source",
+    "ticker",
+    "valid_from",
+    "valid_to",
+    "calculation_formula",
+    "description",
+    "is_active",
+]
+
+# Required columns for meta series CSV (derived from specific columns)
+# These are the minimum required fields for meta series
 META_SERIES_REQUIRED_COLUMNS = [
     "series_name",
     "series_code",
     "data_source",
     "ticker",
 ]
+
+# Staging columns for meta series (meta series fields + all lookup types)
+META_SERIES_STAGING_COLUMNS = META_SERIES_SPECIFIC_COLUMNS + LOOKUP_TABLE_PROCESSING_ORDER
 
 # Required columns for series dependencies CSV
 SERIES_DEPENDENCIES_REQUIRED_COLUMNS = [
@@ -101,6 +108,16 @@ DB_COLUMNS = {
     "meta_series": ("series_id", "series_code"),
 }
 
+# Lookup types that require code fields in addition to name
+# Format: (code_field, name_field, check_field)
+# check_field determines which field to use for duplicate checking
+CODE_BASED_LOOKUPS = {
+    "currency": ("currency_code", "currency_name", "currency_code"),
+    "tenor": ("tenor_code", "tenor_name", "tenor_code"),
+    "country": ("country_code", "country_name", "country_code"),
+    "ticker_source": ("ticker_source_code", "ticker_source_name", "ticker_source_name"),
+}
+
 # Calculation types
 CALCULATION_TYPES = {
     "SMA": "SMA",
@@ -124,7 +141,6 @@ DEFAULT_BATCH_SIZE = 10000  # Default batch size for database insertions
 PYPDL_DEFAULT_HOST = "gnp-histo.europe.echonet"
 PYPDL_DEFAULT_PORT = 12002
 PYPDL_DEFAULT_USERNAME = "jess05 Macro Quant"
-PYPDL_DEFAULT_MAX_CONCURRENT = 3  # Conservative default for concurrent requests
 
 # Retry policy constants
 RETRY_POLICY_MAX_RETRIES_DEFAULT = 3

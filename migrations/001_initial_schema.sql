@@ -25,13 +25,12 @@ ORDER BY (product_type_id);
 CREATE TABLE IF NOT EXISTS subAssetClassLookup (
     sub_asset_class_id UInt32,
     sub_asset_class_name String,
-    asset_class_id UInt32,
     description Nullable(String),
     created_at DateTime64(6) DEFAULT now64(6),
     updated_at DateTime64(6) DEFAULT now64(6)
 ) ENGINE = MergeTree
 PRIMARY KEY (sub_asset_class_id)
-ORDER BY (sub_asset_class_id, asset_class_id);
+ORDER BY (sub_asset_class_id);
 
 CREATE TABLE IF NOT EXISTS dataTypeLookup (
     data_type_id UInt32,
@@ -202,7 +201,7 @@ TTL created_at + INTERVAL 1 YEAR;
 CREATE TABLE IF NOT EXISTS valueData (
     series_id UInt32,
     timestamp DateTime64(6),
-    value Float64,
+    value Decimal(18, 6),
     created_at DateTime64(6) DEFAULT now64(6),
     updated_at DateTime64(6) DEFAULT now64(6)
 ) ENGINE = MergeTree

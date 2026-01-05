@@ -17,6 +17,7 @@ from dagster_clickhouse.io_manager import clickhouse_io_manager
 from dagster_quickstart.assets import (
     calculations,
     csv_loader,
+    bloomberg_ingestion,
     hackernews,
     ingestion,
 )
@@ -27,14 +28,15 @@ from dagster_quickstart.notifications.teams_messages import (
     failure_message_fn,
 )
 
-# from dagster_quickstart.resources import PyPDLResource
 from dagster_quickstart.resources import (
     ClickHouseResource,
-    GreatExpectationsResource,
     OutlookEmailResource,
+    PyPDLResource,
 )
 
-all_assets = load_assets_from_modules([ingestion, calculations, csv_loader, hackernews])
+all_assets = load_assets_from_modules(
+    [ingestion, calculations, csv_loader, hackernews, bloomberg_ingestion]
+)
 
 # Load asset checks
 all_asset_checks = load_asset_checks_from_modules([csv_loader])
@@ -44,14 +46,14 @@ all_asset_checks = load_asset_checks_from_modules([csv_loader])
 # The IO manager is a factory function, so we pass it as a reference
 resources = {
     "clickhouse": ClickHouseResource.from_config(),
-    # "pypdl_resource": PyPDLResource(),
+    "pypdl_resource": PyPDLResource(),
     "io_manager": clickhouse_io_manager,
     "polars_parquet_io_manager": PolarsParquetIOManager(base_dir="data/parquet"),
     "msteams": MSTeamsResource(hook_url=config("TEAMS_WEBHOOK_URL")),
     "outlook_email": OutlookEmailResource.from_config(),
-    "great_expectations": GreatExpectationsResource(),
 }
 # Define jobs
+# Main ingestion job for assets with daily partitions only
 ingestion_job = define_asset_job(
     name="ingestion_job",
     selection=AssetSelection.groups("ingestion"),
@@ -68,6 +70,12 @@ calculations_job = define_asset_job(
     name="calculations_job",
     selection=AssetSelection.groups("calculations"),
     description="Job for calculating derived series",
+)
+
+bloomberg_ingestion_job = define_asset_job(
+    name="bloomberg_ingestion_job",
+    selection=AssetSelection.groups("bloomberg_ingestion"),
+    description="Job for ingesting Bloomberg data using multi-dimensional partitions (daily + series)",
 )
 
 # Define schedules (optional - can be enabled as needed)
@@ -118,7 +126,7 @@ outlook_email_failure_sensor = outlook_email_on_run_failure
 defs = Definitions(
     assets=all_assets,
     asset_checks=all_asset_checks,
-    jobs=[ingestion_job, metadata_job, calculations_job],
+    jobs=[ingestion_job, bloomberg_ingestion_job, metadata_job, calculations_job],
     schedules=[ingestion_schedule, calculations_schedule],
     sensors=[teams_on_run_failure, outlook_email_failure_sensor],
     resources=resources,

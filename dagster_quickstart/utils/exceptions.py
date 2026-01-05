@@ -125,3 +125,28 @@ class GreatExpectationsError(Exception):
     """Raised when Great Expectations operations fail."""
 
     pass
+
+
+class ReferentialIntegrityError(DatabaseError):
+    """Base exception for referential integrity violations."""
+
+    pass
+
+
+class InvalidLookupReferenceError(ReferentialIntegrityError):
+    """Raised when a meta series references an invalid lookup ID or name."""
+
+    def __init__(
+        self, lookup_type: str, lookup_value: str, series_code: str = "", message: str = ""
+    ):
+        self.lookup_type = lookup_type
+        self.lookup_value = lookup_value
+        self.series_code = series_code
+        if not message:
+            if series_code:
+                message = (
+                    f"Series '{series_code}' references invalid {lookup_type} '{lookup_value}'"
+                )
+            else:
+                message = f"Invalid {lookup_type} reference: '{lookup_value}'"
+        super().__init__(message)
