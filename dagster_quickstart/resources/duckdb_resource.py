@@ -7,13 +7,17 @@ Uses duckdb_datacacher for connection management and duckup for migrations.
 
 import re
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Optional, Iterator
+from typing import Any, Iterator, Optional
 
+import duckdb
 import duckup
+import pandas as pd
 import polars as pl
 from dagster import ConfigurableResource, get_dagster_logger
 from qr_common.datacachers.duckdb_datacacher import duckdb_datacacher
+
 logger = get_dagster_logger()
 
 
@@ -27,7 +31,7 @@ class DuckDBResult:
             result: DuckDB query result (relation or fetchall result)
         """
         self._result = result
-        
+
         # Handle different result types
         if hasattr(result, "df"):
             # DuckDB relation with df() method
@@ -86,7 +90,8 @@ class DuckDBResource(ConfigurableResource):
         self._con = cacher._con
         self._ensure_chsql_loaded()
 
-    def get_connection(self) -> Iterator[Any]:
+    @contextmanager
+    def get_connection(self) -> Iterator[duckdb.Connection]:
         """Get the DuckDB connection.
 
         Returns:
@@ -143,24 +148,28 @@ class DuckDBResource(ConfigurableResource):
     ) -> None:
         """Insert data into a DuckDB table using bulk insert.
 
-        Uses DuckDB's register method for efficient bulk inserts with Polars.
+        Uses DuckDB's register method for efficient bulk inserts with Pandas.
+        Accepts raw data (list of lists/tuples) or Polars DataFrames.
 
         Args:
             table: Table name
-            data: List of rows (list of lists or list of tuples)
-            column_names: Optional list of column names
+            data: List of rows (list of lists or list of tuples) or Polars DataFrame
+            column_names: Optional list of column names (ignored if data is already a DataFrame)
             database: Optional database name (ignored for DuckDB)
         """
         if not data:
             return
 
-        # Convert data to Polars DataFrame
-        if column_names:
+        # Handle Polars DataFrame - convert to Pandas
+        if isinstance(data, pl.DataFrame):
+            df = data.to_pandas()
+        # Convert raw data to Pandas DataFrame
+        elif column_names:
             # Use provided column names
-            df = pl.DataFrame(data, schema=column_names)
+            df = pd.DataFrame(data, columns=column_names)
         else:
             # Create DataFrame without column names (DuckDB will infer)
-            df = pl.DataFrame(data)
+            df = pd.DataFrame(data)
 
         # Use DuckDB's register method for bulk insert with unique temp table name
         tmp = f"_tmp_insert_{uuid.uuid4().hex}"
@@ -196,7 +205,6 @@ class DuckDBResource(ConfigurableResource):
         Migrations are tracked and only pending ones are applied.
         """
         try:
-
             migrations_dir = self.get_migrations_directory()
 
             if not migrations_dir.exists():
@@ -209,10 +217,7 @@ class DuckDBResource(ConfigurableResource):
             logger.info("DuckDB migrations applied successfully using duckup")
 
         except ImportError:
-            logger.error(
-                "duckup library not found. "
-                "Install it with: pip install duckup"
-            )
+            logger.error("duckup library not found. " "Install it with: pip install duckup")
             raise
         except duckup.MigrationError as e:
             logger.error(f"Migration error: {e}")
@@ -286,15 +291,15 @@ class DuckDBResource(ConfigurableResource):
 
         def replacer(match: re.Match) -> str:
             """Replace parameter placeholder with ? and collect parameter value.
-            
+
             Handles both scalar values and arrays/lists for IN clauses.
             """
             name = match.group(1)
             if name not in parameters:
                 raise KeyError(f"Missing parameter: {name}")
-            
+
             value = parameters[name]
-            
+
             # Handle array/list parameters for IN clauses
             if isinstance(value, (list, tuple)):
                 # Fail fast on empty lists - invalid SQL: WHERE id IN ()
@@ -303,7 +308,7 @@ class DuckDBResource(ConfigurableResource):
                 placeholders = ", ".join("?" for _ in value)
                 duckdb_params.extend(value)
                 return f"({placeholders})"
-            
+
             # Handle scalar parameters
             duckdb_params.append(value)
             return "?"

@@ -28,4 +28,3 @@ def upgrade(conn: DuckDBPyConnection) -> None:
 def downgrade(conn: DuckDBPyConnection) -> None:
     """Drop staging table for lookup tables."""
     conn.execute("DROP TABLE IF EXISTS staging_lookup_tables")
-

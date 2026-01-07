@@ -48,7 +48,9 @@ META_SERIES_REQUIRED_COLUMNS: List[str] = [
 ]
 
 # Staging columns for meta series (meta series fields + all lookup types)
-META_SERIES_STAGING_COLUMNS: List[str] = META_SERIES_SPECIFIC_COLUMNS + LOOKUP_TABLE_PROCESSING_ORDER
+META_SERIES_STAGING_COLUMNS: List[str] = (
+    META_SERIES_SPECIFIC_COLUMNS + LOOKUP_TABLE_PROCESSING_ORDER
+)
 
 # Required columns for series dependencies CSV
 SERIES_DEPENDENCIES_REQUIRED_COLUMNS: List[str] = [

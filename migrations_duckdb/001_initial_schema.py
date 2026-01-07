@@ -234,7 +234,9 @@ def upgrade(conn: DuckDBPyConnection) -> None:
     """)
 
     # Create indexes for performance
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_valueData_series_timestamp ON valueData(series_id, timestamp)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_valueData_series_timestamp ON valueData(series_id, timestamp)"
+    )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_valueData_timestamp ON valueData(timestamp)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_metaSeries_code ON metaSeries(series_code)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_metaSeries_active ON metaSeries(is_active)")
@@ -260,4 +262,3 @@ def downgrade(conn: DuckDBPyConnection) -> None:
     conn.execute("DROP TABLE IF EXISTS subAssetClassLookup")
     conn.execute("DROP TABLE IF EXISTS productTypeLookup")
     conn.execute("DROP TABLE IF EXISTS assetClassLookup")
-

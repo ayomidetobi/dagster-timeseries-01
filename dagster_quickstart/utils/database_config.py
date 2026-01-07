@@ -100,4 +100,3 @@ def is_duckdb() -> bool:
         True if DuckDB, False if ClickHouse
     """
     return get_database_type() == "duckdb"
-

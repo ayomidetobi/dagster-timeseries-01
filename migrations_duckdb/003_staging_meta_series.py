@@ -37,4 +37,3 @@ def upgrade(conn: DuckDBPyConnection) -> None:
 def downgrade(conn: DuckDBPyConnection) -> None:
     """Drop staging table for meta series."""
     conn.execute("DROP TABLE IF EXISTS staging_meta_series")
-

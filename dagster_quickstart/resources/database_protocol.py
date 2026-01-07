@@ -77,4 +77,3 @@ class DatabaseResource(Protocol):
             Path to migrations directory
         """
         ...
-

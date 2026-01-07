@@ -7,6 +7,7 @@ from dagster_quickstart.utils.datetime_utils import utc_now_metadata
 from database.models import DataSource, MetaSeriesCreate
 from database.utils import get_next_id, query_to_dict, query_to_dict_list
 from database.utils import DatabaseResource
+
 # Constants to avoid circular imports
 META_SERIES_TABLE = "metaSeries"
 QUERY_LIMIT_DEFAULT = 1000
