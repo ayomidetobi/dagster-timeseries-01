@@ -24,6 +24,7 @@ from database.models import (
 from database.utils import (
     execute_insert_query,
     execute_update_query,
+    get_by_id,
     get_by_name,
     get_next_id,
 )
@@ -115,6 +116,20 @@ class LookupTableManager:
         table_name = DB_TABLES[lookup_type]
         _, name_column = DB_COLUMNS[lookup_type]
         return get_by_name(self.clickhouse, table_name, name_column, name)
+
+    def _get_lookup_by_id(self, lookup_type: str, record_id: int) -> Optional[Dict[str, Any]]:
+        """Generic method to get a lookup record by ID.
+
+        Args:
+            lookup_type: Type of lookup (e.g., "asset_class")
+            record_id: ID to search for
+
+        Returns:
+            Dictionary with record data or None if not found
+        """
+        table_name = DB_TABLES[lookup_type]
+        id_column, _ = DB_COLUMNS[lookup_type]
+        return get_by_id(self.clickhouse, table_name, id_column, record_id)
 
     # Asset Class methods
     def insert_asset_class(self, asset_class: AssetClassLookup) -> int:
@@ -216,6 +231,17 @@ class LookupTableManager:
     def get_field_type_by_name(self, name: str) -> Optional[Dict[str, Any]]:
         """Get field type by name."""
         return self._get_lookup_by_name("field_type", name)
+
+    def get_field_type_by_id(self, field_type_id: int) -> Optional[Dict[str, Any]]:
+        """Get field type by ID.
+
+        Args:
+            field_type_id: Field type ID to lookup
+
+        Returns:
+            Dictionary with field type data or None if not found
+        """
+        return self._get_lookup_by_id("field_type", field_type_id)
 
     # Ticker Source methods
     def insert_ticker_source(self, ticker_source: TickerSourceLookup) -> int:
