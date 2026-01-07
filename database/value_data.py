@@ -25,7 +25,8 @@ from typing import Any, Dict, List, Optional
 
 from dagster import get_dagster_logger
 
-from dagster_quickstart.resources import ClickHouseResource
+# Type alias for database resources - imported from utils to avoid duplication
+from database.utils import DatabaseResource
 from dagster_quickstart.utils.constants import DEFAULT_BATCH_SIZE
 from dagster_quickstart.utils.datetime_utils import validate_timestamp
 from dagster_quickstart.utils.exceptions import DatabaseInsertError
@@ -39,14 +40,14 @@ logger = get_dagster_logger()
 class ValueDataManager:
     """Manager for value data operations."""
 
-    def __init__(self, clickhouse: ClickHouseResource, batch_size: int = DEFAULT_BATCH_SIZE):
-        """Initialize with ClickHouse resource.
+    def __init__(self, database: DatabaseResource, batch_size: int = DEFAULT_BATCH_SIZE):
+        """Initialize with database resource.
 
         Args:
-            clickhouse: ClickHouse resource instance
+            database: Database resource instance (ClickHouse or DuckDB)
             batch_size: Batch size for insertions (default: 10000)
         """
-        self.clickhouse = clickhouse
+        self.database = database
         self.batch_size = batch_size
 
     def insert_value_data(
@@ -165,7 +166,7 @@ class ValueDataManager:
         for batch_start_idx in range(0, len(batch_data), self.batch_size):
             batch = batch_data[batch_start_idx : batch_start_idx + self.batch_size]
             try:
-                self.clickhouse.insert_data(
+                self.database.insert_data(
                     table=VALUE_DATA_TABLE,
                     data=batch,
                     column_names=column_names,
@@ -233,7 +234,7 @@ class ValueDataManager:
         query += " ORDER BY timestamp DESC LIMIT {limit:UInt32}"
         params["limit"] = limit
 
-        result = self.clickhouse.execute_query(query, parameters=params)
+        result = self.database.execute_query(query, parameters=params)
         if hasattr(result, "result_rows") and result.result_rows:
             columns = result.column_names
             return [dict(zip(columns, row)) for row in result.result_rows]
@@ -253,7 +254,7 @@ class ValueDataManager:
         FROM {VALUE_DATA_TABLE}
         WHERE series_id = {{series_id:UInt32}}
         """
-        result = self.clickhouse.execute_query(query, parameters={"series_id": series_id})
+        result = self.database.execute_query(query, parameters={"series_id": series_id})
         if hasattr(result, "result_rows") and result.result_rows and result.result_rows[0][0]:
             return result.result_rows[0][0]
         return None
@@ -279,7 +280,7 @@ class ValueDataManager:
         WHERE series_id IN ({{series_ids:Array(UInt32)}})
         GROUP BY series_id
         """
-        result = self.clickhouse.execute_query(query, parameters={"series_ids": series_ids})
+        result = self.database.execute_query(query, parameters={"series_ids": series_ids})
 
         # Build dictionary from results
         timestamps_map: Dict[int, Optional[datetime]] = {}
@@ -329,6 +330,8 @@ class ValueDataManager:
                 f"start_date ({normalized_start}) must be <= end_date ({normalized_end})"
             )
 
+        # Use ClickHouse ALTER TABLE DELETE syntax (canonical format)
+        # DuckDBResource will normalize this to standard DELETE FROM
         query = f"""
         ALTER TABLE {VALUE_DATA_TABLE}
         DELETE WHERE series_id = {{series_id:UInt32}}
@@ -337,7 +340,7 @@ class ValueDataManager:
         """
 
         try:
-            self.clickhouse.execute_command(
+            self.database.execute_command(
                 query,
                 parameters={
                     "series_id": series_id,
@@ -345,6 +348,10 @@ class ValueDataManager:
                     "end_date": normalized_end,
                 },
             )
+            # ClickHouse ALTER DELETE doesn't return exact count
+            # For DuckDB, we could query count first, but we use -1 for consistency
+            rows_deleted = -1
+
             logger.info(
                 "Deleted partition data for series",
                 extra={
@@ -352,10 +359,10 @@ class ValueDataManager:
                     "start_date": normalized_start.isoformat(),
                     "end_date": normalized_end.isoformat(),
                     "table": VALUE_DATA_TABLE,
+                    "rows_deleted": rows_deleted,
                 },
             )
-            # ClickHouse ALTER DELETE doesn't return row count, return -1 to indicate unknown
-            return -1
+            return rows_deleted
         except Exception as e:
             logger.error(
                 "Error deleting partition data",

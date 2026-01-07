@@ -2,7 +2,10 @@
 
 from typing import Any, Dict, Optional
 
-from dagster_quickstart.resources import ClickHouseResource
+from typing import Any, Dict, Optional
+
+# Type alias for database resources - imported from utils to avoid duplication
+from database.utils import DatabaseResource
 from dagster_quickstart.utils.constants import DB_COLUMNS, DB_TABLES
 from dagster_quickstart.utils.datetime_utils import utc_now_metadata
 from dagster_quickstart.utils.exceptions import DatabaseError
@@ -33,9 +36,13 @@ from database.utils import (
 class LookupTableManager:
     """Manager for lookup table operations."""
 
-    def __init__(self, clickhouse: ClickHouseResource):
-        """Initialize with ClickHouse resource."""
-        self.clickhouse = clickhouse
+    def __init__(self, database: DatabaseResource):
+        """Initialize with database resource (ClickHouse or DuckDB).
+
+        Args:
+            database: Database resource instance (ClickHouseResource or DuckDBResource)
+        """
+        self.database = database
 
     def _insert_or_update_lookup(
         self,
@@ -71,7 +78,7 @@ class LookupTableManager:
 
             try:
                 execute_update_query(
-                    self.clickhouse,
+                    self.database,
                     table_name,
                     id_column,
                     record_id,
@@ -83,7 +90,7 @@ class LookupTableManager:
                 raise DatabaseError(f"Failed to update {lookup_type}: {e}") from e
         else:
             # Insert new record
-            next_id = get_next_id(self.clickhouse, table_name, id_column)
+            next_id = get_next_id(self.database, table_name, id_column)
             insert_fields = {name_column: name}
             if description is not None:
                 insert_fields["description"] = description
@@ -92,7 +99,7 @@ class LookupTableManager:
 
             try:
                 execute_insert_query(
-                    self.clickhouse,
+                    self.database,
                     table_name,
                     id_column,
                     next_id,
@@ -115,7 +122,7 @@ class LookupTableManager:
         """
         table_name = DB_TABLES[lookup_type]
         _, name_column = DB_COLUMNS[lookup_type]
-        return get_by_name(self.clickhouse, table_name, name_column, name)
+        return get_by_name(self.database, table_name, name_column, name)
 
     def _get_lookup_by_id(self, lookup_type: str, record_id: int) -> Optional[Dict[str, Any]]:
         """Generic method to get a lookup record by ID.
@@ -129,7 +136,7 @@ class LookupTableManager:
         """
         table_name = DB_TABLES[lookup_type]
         id_column, _ = DB_COLUMNS[lookup_type]
-        return get_by_id(self.clickhouse, table_name, id_column, record_id)
+        return get_by_id(self.database, table_name, id_column, record_id)
 
     # Asset Class methods
     def insert_asset_class(self, asset_class: AssetClassLookup) -> int:
@@ -261,7 +268,7 @@ class LookupTableManager:
     def get_ticker_source_by_code(self, code: str) -> Optional[Dict[str, Any]]:
         """Get ticker source by code."""
         table_name = DB_TABLES["ticker_source"]
-        return get_by_name(self.clickhouse, table_name, "ticker_source_code", code)
+        return get_by_name(self.database, table_name, "ticker_source_code", code)
 
     # Region methods
     def insert_region(self, region: RegionLookup) -> int:
@@ -291,7 +298,7 @@ class LookupTableManager:
     def get_currency_by_code(self, code: str) -> Optional[Dict[str, Any]]:
         """Get currency by code."""
         table_name = DB_TABLES["currency"]
-        return get_by_name(self.clickhouse, table_name, "currency_code", code)
+        return get_by_name(self.database, table_name, "currency_code", code)
 
     # Term methods
     def insert_term(self, term: TermLookup) -> int:
@@ -321,7 +328,7 @@ class LookupTableManager:
     def get_tenor_by_code(self, code: str) -> Optional[Dict[str, Any]]:
         """Get tenor by code."""
         table_name = DB_TABLES["tenor"]
-        return get_by_name(self.clickhouse, table_name, "tenor_code", code)
+        return get_by_name(self.database, table_name, "tenor_code", code)
 
     # Country methods
     def insert_country(self, country: CountryLookup) -> int:
@@ -337,4 +344,4 @@ class LookupTableManager:
     def get_country_by_code(self, code: str) -> Optional[Dict[str, Any]]:
         """Get country by code."""
         table_name = DB_TABLES["country"]
-        return get_by_name(self.clickhouse, table_name, "country_code", code)
+        return get_by_name(self.database, table_name, "country_code", code)
