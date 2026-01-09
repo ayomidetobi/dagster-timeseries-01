@@ -25,11 +25,12 @@ from database.dependency import CalculationLogManager
 from database.meta_series import MetaSeriesManager
 from database.models import CalculationLogBase, CalculationStatus, DataSource
 
-# Try to import SQL class from qr_common, but make it optional
+# Try to import SQL class and utility functions from qr_common, but make them optional
 try:
-    from qr_common.datacachers.duckdb_datacacher import SQL
+    from qr_common.datacachers.duckdb_datacacher import SQL, join_s3
 except ImportError:
     SQL = None  # type: ignore
+    join_s3 = None  # type: ignore
 
 logger = get_dagster_logger()
 
@@ -194,14 +195,14 @@ def load_series_data_from_duckdb(duckdb: DuckDBResource, series_id: int) -> Opti
         else:
             # SQL class not available, use execute_query as fallback
             bucket = duckdb.get_bucket()
-            full_s3_path = f"s3://{bucket}/{relative_path}"
+            full_s3_path = build_full_s3_path(bucket, relative_path)
             query = f"""
             SELECT timestamp, value
             FROM read_parquet('{full_s3_path}')
             ORDER BY timestamp
             """
             df = duckdb.execute_query(query)
-            if df is not None and not df.empty:
+            if not df.empty:
                 # Ensure we only have timestamp and value columns
                 if all(col in df.columns for col in ["timestamp", "value"]):
                     return df[["timestamp", "value"]]
@@ -425,15 +426,6 @@ def resolve_lookup_id_from_string(
     return None
 
 
-def get_sql_class() -> Optional[Any]:
-    """Get SQL class from qr_common if available.
-
-    Returns:
-        SQL class or None if not available
-    """
-    return SQL
-
-
 def create_sql_query_with_file_path(query_template: str, file_path: str, **kwargs: Any) -> Any:
     """Create SQL query object with file_path binding.
 
@@ -448,7 +440,6 @@ def create_sql_query_with_file_path(query_template: str, file_path: str, **kwarg
     Raises:
         DatabaseQueryError: If SQL class is required but not available
     """
-    SQL = get_sql_class()
     if SQL is not None:
         return SQL(query_template, file_path=file_path, **kwargs)
     # Return template string for fallback usage
@@ -484,6 +475,10 @@ def build_s3_staging_path(staging_type: str, timestamp: int, unique_id: str) -> 
 def build_full_s3_path(bucket: str, relative_path: str) -> str:
     """Build full S3 path from bucket and relative path.
 
+    Note: This is only needed for raw SQL strings. When using SQL objects with
+    $file_path bindings, duckdb_datacacher automatically uses join_s3 internally
+    via sql_to_string() and save() methods.
+
     Args:
         bucket: S3 bucket name
         relative_path: Relative path within bucket
@@ -491,7 +486,10 @@ def build_full_s3_path(bucket: str, relative_path: str) -> str:
     Returns:
         Full S3 path (e.g., 's3://bucket/path/to/file.parquet')
     """
-    return f"s3://{bucket}/{relative_path}"
+    if join_s3 is not None:
+        return join_s3(bucket, relative_path)
+    # Fallback: construct manually (only for raw SQL strings)
+    return f"s3://{bucket}/{relative_path.lstrip('/')}"
 
 
 def load_from_s3_parquet(
@@ -502,7 +500,8 @@ def load_from_s3_parquet(
 ) -> Optional[pd.DataFrame]:
     """Load data from S3 Parquet file using DuckDBResource.
 
-    Handles both SQL class bindings and fallback to direct queries.
+    Uses DuckDBResource.load() which handles SQL validation and conversion.
+    Falls back to execute_query if SQL class is not available.
 
     Args:
         duckdb: DuckDB resource with S3 access
@@ -516,22 +515,22 @@ def load_from_s3_parquet(
     Raises:
         DatabaseQueryError: If query execution fails
     """
-    SQL = get_sql_class()
-    bucket = duckdb.get_bucket()
-    full_s3_path = build_full_s3_path(bucket, relative_path)
-
     try:
-        if SQL is not None:
-            query = create_sql_query_with_file_path(query_template, relative_path)
-            df = duckdb.load(query)
-            if df is not None and not df.empty:
-                return df
-        else:
-            # Fallback: Use execute_query directly
-            resolved_query = query_template.replace(SQL_FILE_PATH_PLACEHOLDER, f"'{full_s3_path}'")
-            df = duckdb.execute_query(resolved_query)
-            if df is not None and not df.empty:
-                return df
+        # Create SQL query with file_path binding
+        query = create_sql_query_with_file_path(query_template, relative_path)
+        
+        # DuckDBResource.load() handles SQL validation and conversion internally
+        df = duckdb.load(query)
+        if df is not None and not df.empty:
+            return df
+    except ValueError:
+        # SQL class not available or validation failed, fallback to execute_query
+        bucket = duckdb.get_bucket()
+        full_s3_path = build_full_s3_path(bucket, relative_path)
+        resolved_query = query_template.replace(SQL_FILE_PATH_PLACEHOLDER, f"'{full_s3_path}'")
+        df = duckdb.execute_query(resolved_query)
+        if not df.empty:
+            return df
     except Exception as e:
         error_msg = f"Failed to load data from S3 path {relative_path}: {e}"
         if context:
@@ -549,7 +548,7 @@ def save_to_s3_parquet(
 ) -> bool:
     """Save data to S3 Parquet file using DuckDBResource.
 
-    Handles both SQL class bindings and fallback to direct COPY commands.
+    Uses DuckDBResource.save() which handles SQL validation and conversion.
 
     Args:
         duckdb: DuckDB resource with S3 access
@@ -563,50 +562,21 @@ def save_to_s3_parquet(
     Raises:
         DatabaseQueryError: If save operation fails
     """
-    SQL = get_sql_class()
-    bucket = duckdb.get_bucket()
-
     try:
-        if SQL is not None:
-            # If select_query is a string, create SQL object with file_path binding
-            if isinstance(select_query, str):
-                select_query = SQL(select_query, file_path=relative_path)
-            elif not isinstance(select_query, SQL):
-                raise DatabaseQueryError(
-                    f"Invalid select_query type: {type(select_query)}. "
-                    "Expected SQL object or string."
-                )
-
-            success = duckdb.save(
-                select_statement=select_query,
-                file_path=relative_path,
-            )
-            if not success:
-                raise DatabaseQueryError(f"Failed to save data to S3: {relative_path}")
-            return True
-        else:
-            # Fallback: Use DuckDB's COPY TO directly
-            full_s3_path = build_full_s3_path(bucket, relative_path)
-            # Extract table name from select_query if it's a string
-            if isinstance(select_query, str):
-                # Assume format: "SELECT * FROM table_name"
-                parts = select_query.upper().split("FROM")
-                if len(parts) < 2:
-                    raise DatabaseQueryError(
-                        f"Invalid select_query format: {select_query}. "
-                        "Expected 'SELECT * FROM table_name'"
-                    )
-                table_match = parts[-1].strip()
-                copy_query = f"COPY {table_match} TO '{full_s3_path}' (FORMAT PARQUET)"
-            else:
-                raise DatabaseQueryError(
-                    "Cannot use fallback COPY without SQL class. "
-                    "select_query must be a string with table name."
-                )
-            duckdb.execute_command(copy_query)
-            return True
-    except DatabaseQueryError:
-        raise  # Re-raise domain-specific exceptions
+        # DuckDBResource.save() handles SQL validation and conversion internally
+        success = duckdb.save(
+            select_statement=select_query,
+            file_path=relative_path,
+        )
+        if not success:
+            raise DatabaseQueryError(f"Failed to save data to S3: {relative_path}")
+        return True
+    except ValueError as e:
+        # Re-raise validation errors as DatabaseQueryError
+        error_msg = f"Invalid select_query for S3 save: {e}"
+        if context:
+            context.log.error(error_msg)
+        raise DatabaseQueryError(error_msg) from e
     except Exception as e:
         error_msg = f"Failed to save data to S3 path {relative_path}: {e}"
         if context:

@@ -43,7 +43,7 @@ class DuckDBResource(ConfigurableResource):
             cacher: DuckDB datacacher instance providing connection and S3 access
         """
         self._cacher = cacher
-        self._con = cacher._con
+        self._con = cacher.con
 
     @contextmanager
     def get_connection(self) -> Iterator[duckdb.Connection]:
@@ -121,9 +121,9 @@ class DuckDBResource(ConfigurableResource):
 
         # Use DuckDB's register method for bulk insert with unique temp table name
         tmp = f"_tmp_insert_{uuid.uuid4().hex}"
-        self._con.register(tmp, df)
+        self.register_dataframe(tmp, df)
         self._con.execute(f"INSERT INTO {table} SELECT * FROM {tmp}")
-        self._con.unregister(tmp)
+        self.unregister_dataframe(tmp)
 
     def ensure_database(self) -> None:
         """Ensure the database exists.
@@ -344,4 +344,30 @@ class DuckDBResource(ConfigurableResource):
                 f"Expected SQL object with 'sql' and 'bindings' attributes; got {type(s)}"
             )
 
-        return self._cacher._sql_to_string(s)
+        # Expose the private method as a public method
+        return self._cacher._sql_to_string(s)  # type: ignore
+
+    def register_dataframe(self, name: str, df: pd.DataFrame) -> None:
+        """Register a pandas DataFrame as a temporary table in DuckDB.
+
+        Public method to register DataFrames for use in SQL queries.
+
+        Args:
+            name: Name for the temporary table
+            df: Pandas DataFrame to register
+        """
+        self._con.register(name, df)
+
+    def unregister_dataframe(self, name: str) -> None:
+        """Unregister a temporary table from DuckDB.
+
+        Public method to clean up registered DataFrames.
+
+        Args:
+            name: Name of the temporary table to unregister
+        """
+        try:
+            self._con.unregister(name)
+        except Exception:
+            # Table may already be unregistered, ignore
+            pass

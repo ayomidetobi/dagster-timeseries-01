@@ -288,13 +288,13 @@ def _register_temp_table_for_staging(duckdb: DuckDBResource, df_staging: pd.Data
 
     Args:
         duckdb: DuckDB resource
-        df_staging: Polars DataFrame to register
+        df_staging: Pandas DataFrame to register
 
     Returns:
         Temporary table name
     """
     temp_table = f"_temp_staging_{uuid.uuid4().hex}"
-    duckdb._con.register(temp_table, df_staging)
+    duckdb.register_dataframe(temp_table, df_staging)
     return temp_table
 
 
@@ -305,10 +305,7 @@ def _unregister_temp_table(duckdb: DuckDBResource, temp_table: str) -> None:
         duckdb: DuckDB resource
         temp_table: Temporary table name to unregister
     """
-    try:
-        duckdb._con.unregister(temp_table)
-    except Exception:
-        pass  # Table may already be unregistered
+    duckdb.unregister_dataframe(temp_table)
 
 
 def load_csv_to_staging_s3(

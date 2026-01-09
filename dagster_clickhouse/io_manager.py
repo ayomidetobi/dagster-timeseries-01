@@ -284,8 +284,7 @@ class DuckDBIOManager(ConfigurableIOManager):
 
         # Register DataFrame in DuckDB connection as temp table
         temp_table = f"_temp_series_{series_id}"
-        con = self.duckdb._con
-        con.register(temp_table, df)
+        self.duckdb.register_dataframe(temp_table, df)
 
         try:
             # Use helper function to save to S3 Parquet
@@ -302,10 +301,7 @@ class DuckDBIOManager(ConfigurableIOManager):
             )
         finally:
             # Clean up temp table
-            try:
-                con.unregister(temp_table)
-            except Exception:
-                pass
+            self.duckdb.unregister_dataframe(temp_table)
 
 
 @io_manager(required_resource_keys={"duckdb"})

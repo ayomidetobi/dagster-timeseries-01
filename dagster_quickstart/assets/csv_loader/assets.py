@@ -33,7 +33,7 @@ from .logic import (
 @asset(
     group_name="metadata",
     description="Initialize database schema - create all required DuckDB tables",
-    io_manager_key="polars_parquet_io_manager",
+    io_manager_key="duckdb_io_manager",
     kinds=["duckdb"],
     owners=["team:mqrm-data-eng"],
     tags={"m360-mqrm": "", "architecture": "s3-parquet-datalake"},
@@ -81,7 +81,7 @@ def init_database_schema(
     group_name="metadata",
     description="Load lookup tables from CSV with validation - uses S3 Parquet staging",
     deps=[AssetKey("init_database_schema")],  # Schema must be initialized first
-    io_manager_key="polars_parquet_io_manager",
+    io_manager_key="duckdb_io_manager",
     kinds=["csv", "duckdb", "s3"],
     owners=["team:mqrm-data-eng"],
     tags={"m360-mqrm": "", "architecture": "s3-parquet-datalake"},
@@ -189,7 +189,7 @@ def load_lookup_tables_from_csv(
         AssetKey("init_database_schema"),  # Schema must be initialized first
         AssetKey("load_lookup_tables_from_csv"),  # Depends on lookup tables being loaded first
     ],
-    io_manager_key="polars_parquet_io_manager",
+    io_manager_key="duckdb_io_manager",
     kinds=["csv", "duckdb", "s3"],
     owners=["team:mqrm-data-eng"],
     tags={"m360-mqrm": "", "architecture": "s3-parquet-datalake"},
