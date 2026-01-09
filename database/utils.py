@@ -3,15 +3,21 @@
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from dagster_quickstart.resources import ClickHouseResource
+from typing import Union
+
+from dagster_quickstart.resources import ClickHouseResource, DuckDBResource
+
+# Type alias for database resources
+# Imported from central location to avoid duplication
+DatabaseResource = Union[ClickHouseResource, DuckDBResource]
 from dagster_quickstart.utils.datetime_utils import utc_now_metadata
 
 
-def get_next_id(clickhouse: ClickHouseResource, table_name: str, id_column: str) -> int:
+def get_next_id(database: DatabaseResource, table_name: str, id_column: str) -> int:
     """Get the next ID for a table by querying max ID.
 
     Args:
-        clickhouse: ClickHouse resource
+        database: Database resource (ClickHouse or DuckDB)
         table_name: Name of the table
         id_column: Name of the ID column
 
@@ -19,14 +25,14 @@ def get_next_id(clickhouse: ClickHouseResource, table_name: str, id_column: str)
         Next ID to use (max + 1, or 1 if table is empty)
     """
     query = f"SELECT max({id_column}) FROM {table_name}"
-    result = clickhouse.execute_query(query)
+    result = database.execute_query(query)
     if hasattr(result, "result_rows") and result.result_rows and result.result_rows[0][0]:
         return result.result_rows[0][0] + 1
     return 1
 
 
 def get_by_name(
-    clickhouse: ClickHouseResource,
+    database: DatabaseResource,
     table_name: str,
     name_column: str,
     name: str,
@@ -34,7 +40,7 @@ def get_by_name(
     """Get a record by name from any lookup table.
 
     Args:
-        clickhouse: ClickHouse resource
+        database: Database resource (ClickHouse or DuckDB)
         table_name: Name of the table
         name_column: Name of the name column
         name: Name to search for
@@ -43,7 +49,7 @@ def get_by_name(
         Dictionary with record data or None if not found
     """
     query = f"SELECT * FROM {table_name} WHERE {name_column} = {{name:String}} LIMIT 1"
-    result = clickhouse.execute_query(query, parameters={"name": name})
+    result = database.execute_query(query, parameters={"name": name})
     if hasattr(result, "result_rows") and result.result_rows:
         columns = result.column_names
         return dict(zip(columns, result.result_rows[0]))
@@ -51,7 +57,7 @@ def get_by_name(
 
 
 def get_by_id(
-    clickhouse: ClickHouseResource,
+    database: DatabaseResource,
     table_name: str,
     id_column: str,
     record_id: int,
@@ -59,7 +65,7 @@ def get_by_id(
     """Get a record by ID from any lookup table.
 
     Args:
-        clickhouse: ClickHouse resource
+        database: Database resource (ClickHouse or DuckDB)
         table_name: Name of the table
         id_column: Name of the ID column
         record_id: ID to search for
@@ -68,7 +74,7 @@ def get_by_id(
         Dictionary with record data or None if not found
     """
     query = f"SELECT * FROM {table_name} WHERE {id_column} = {{id:UInt32}} LIMIT 1"
-    result = clickhouse.execute_query(query, parameters={"id": record_id})
+    result = database.execute_query(query, parameters={"id": record_id})
     if hasattr(result, "result_rows") and result.result_rows:
         columns = result.column_names
         return dict(zip(columns, result.result_rows[0]))
@@ -76,7 +82,7 @@ def get_by_id(
 
 
 def execute_update_query(
-    clickhouse: ClickHouseResource,
+    database: DatabaseResource,
     table_name: str,
     id_column: str,
     record_id: int,
@@ -86,7 +92,7 @@ def execute_update_query(
     """Execute an UPDATE query using ALTER TABLE.
 
     Args:
-        clickhouse: ClickHouse resource
+        database: Database resource (ClickHouse or DuckDB)
         table_name: Name of the table
         id_column: Name of the ID column
         record_id: ID of the record to update
@@ -121,19 +127,21 @@ def execute_update_query(
             set_clauses.append(f"{field_name} = {{field_{field_name}:String}}")
             params[f"field_{field_name}"] = str(value) if value is not None else None
 
-    # Add updated_at
+    # Add updated_at (ClickHouse format - DuckDBResource will normalize)
     set_clauses.append("updated_at = {now:DateTime64(6)}")
 
     if not set_clauses:
         return  # Nothing to update
 
+    # Use ClickHouse ALTER TABLE UPDATE syntax (canonical format)
+    # DuckDBResource will normalize this to standard UPDATE
     query = f"""
     ALTER TABLE {table_name}
     UPDATE {', '.join(set_clauses)}
     WHERE {id_column} = {{id:UInt32}}
     """
 
-    clickhouse.execute_command(query, parameters=params)
+    database.execute_command(query, parameters=params)
 
 
 def execute_insert_query(
@@ -147,7 +155,7 @@ def execute_insert_query(
     """Execute an INSERT query.
 
     Args:
-        clickhouse: ClickHouse resource
+        database: Database resource (ClickHouse or DuckDB)
         table_name: Name of the table
         id_column: Name of the ID column
         record_id: ID to insert

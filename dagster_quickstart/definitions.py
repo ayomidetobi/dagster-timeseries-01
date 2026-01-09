@@ -29,10 +29,10 @@ from dagster_quickstart.notifications.teams_messages import (
 )
 
 from dagster_quickstart.resources import (
-    ClickHouseResource,
     OutlookEmailResource,
     PyPDLResource,
 )
+from dagster_quickstart.utils.database_config import get_database_resource
 
 all_assets = load_assets_from_modules(
     [ingestion, calculations, csv_loader, hackernews, bloomberg_ingestion]
@@ -41,11 +41,24 @@ all_assets = load_assets_from_modules(
 # Load asset checks
 all_asset_checks = load_asset_checks_from_modules([csv_loader])
 
+# Get database resource based on configuration in constants.py
+# Set DATABASE_TYPE in constants.py or via DATABASE_TYPE environment variable
+# For DuckDB, provide duckdb_cacher parameter if needed
+try:
+    # Try to get DuckDB cacher if DuckDB is configured
+    from qr_common.datacachers.duckdb_datacacher import duckdb_datacacher
+
+    duckdb_cacher = duckdb_datacacher()  # Configure with your actual parameters
+except (ImportError, Exception):
+    # If DuckDB cacher is not available or ClickHouse is configured, use None
+    duckdb_cacher = None
+
+database_resource = get_database_resource(duckdb_cacher=duckdb_cacher)
+
 # Define resources
-# ClickHouseResource is a ConfigurableResource, so we can instantiate it directly
-# The IO manager is a factory function, so we pass it as a reference
+# Database resource is configured via DATABASE_TYPE in constants.py or environment variable
 resources = {
-    "clickhouse": ClickHouseResource.from_config(),
+    "clickhouse": database_resource,  # Keep name as "clickhouse" for compatibility
     "pypdl_resource": PyPDLResource(),
     "io_manager": clickhouse_io_manager,
     "polars_parquet_io_manager": PolarsParquetIOManager(base_dir="data/parquet"),

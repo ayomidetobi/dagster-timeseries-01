@@ -1,8 +1,10 @@
 """Constants used across Dagster assets."""
 
+from typing import Dict, List, Tuple
+
 # Processing order for lookup tables (all independent now)
 # This is the source of truth for lookup table types and their processing order
-LOOKUP_TABLE_PROCESSING_ORDER = [
+LOOKUP_TABLE_PROCESSING_ORDER: List[str] = [
     "asset_class",
     "product_type",
     "data_type",
@@ -20,11 +22,11 @@ LOOKUP_TABLE_PROCESSING_ORDER = [
 
 # Lookup table column names (derived from processing order)
 # Used for CSV column validation - same items as processing order, can be in any order
-LOOKUP_TABLE_COLUMNS = list(LOOKUP_TABLE_PROCESSING_ORDER)
+LOOKUP_TABLE_COLUMNS: List[str] = list(LOOKUP_TABLE_PROCESSING_ORDER)
 
 # Meta series specific columns (non-lookup fields)
 # This is the source of truth for all meta series fields
-META_SERIES_SPECIFIC_COLUMNS = [
+META_SERIES_SPECIFIC_COLUMNS: List[str] = [
     "series_name",
     "series_code",
     "data_source",
@@ -38,7 +40,7 @@ META_SERIES_SPECIFIC_COLUMNS = [
 
 # Required columns for meta series CSV (derived from specific columns)
 # These are the minimum required fields for meta series
-META_SERIES_REQUIRED_COLUMNS = [
+META_SERIES_REQUIRED_COLUMNS: List[str] = [
     "series_name",
     "series_code",
     "data_source",
@@ -46,16 +48,18 @@ META_SERIES_REQUIRED_COLUMNS = [
 ]
 
 # Staging columns for meta series (meta series fields + all lookup types)
-META_SERIES_STAGING_COLUMNS = META_SERIES_SPECIFIC_COLUMNS + LOOKUP_TABLE_PROCESSING_ORDER
+META_SERIES_STAGING_COLUMNS: List[str] = (
+    META_SERIES_SPECIFIC_COLUMNS + LOOKUP_TABLE_PROCESSING_ORDER
+)
 
 # Required columns for series dependencies CSV
-SERIES_DEPENDENCIES_REQUIRED_COLUMNS = [
+SERIES_DEPENDENCIES_REQUIRED_COLUMNS: List[str] = [
     "parent_series_code",
     "child_series_code",
 ]
 
 # Default CSV file paths
-DEFAULT_CSV_PATHS = {
+DEFAULT_CSV_PATHS: Dict[str, str] = {
     "lookup_tables": "data/lookup_tables.csv",
     "allowed_names": "data/allowed_names.csv",
     "meta_series": "data/meta_series.csv",
@@ -63,14 +67,14 @@ DEFAULT_CSV_PATHS = {
 }
 
 # NULL value representation in CSV files
-NULL_VALUE_REPRESENTATION = "\\N"
+NULL_VALUE_REPRESENTATION: str = "\\N"
 
 # Date format strings
-DATE_FORMAT = "%Y-%m-%d"
-DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+DATE_FORMAT: str = "%Y-%m-%d"
+DATETIME_FORMAT: str = "%Y-%m-%d %H:%M:%S"
 
 # Database table names
-DB_TABLES = {
+DB_TABLES: Dict[str, str] = {
     "asset_class": "assetClassLookup",
     "product_type": "productTypeLookup",
     "sub_asset_class": "subAssetClassLookup",
@@ -91,7 +95,7 @@ DB_TABLES = {
 }
 
 # Database column name mappings (lookup type -> (id_column, name_column)
-DB_COLUMNS = {
+DB_COLUMNS: Dict[str, Tuple[str, str]] = {
     "asset_class": ("asset_class_id", "asset_class_name"),
     "product_type": ("product_type_id", "product_type_name"),
     "sub_asset_class": ("sub_asset_class_id", "sub_asset_class_name"),
@@ -111,7 +115,7 @@ DB_COLUMNS = {
 # Lookup types that require code fields in addition to name
 # Format: (code_field, name_field, check_field)
 # check_field determines which field to use for duplicate checking
-CODE_BASED_LOOKUPS = {
+CODE_BASED_LOOKUPS: Dict[str, Tuple[str, str, str]] = {
     "currency": ("currency_code", "currency_name", "currency_code"),
     "tenor": ("tenor_code", "tenor_name", "tenor_code"),
     "country": ("country_code", "country_name", "country_code"),
@@ -119,7 +123,7 @@ CODE_BASED_LOOKUPS = {
 }
 
 # Calculation types
-CALCULATION_TYPES = {
+CALCULATION_TYPES: Dict[str, str] = {
     "SMA": "SMA",
     "WEIGHTED_COMPOSITE": "WEIGHTED_COMPOSITE",
     "MOVING_AVERAGE": "MOVING_AVERAGE",
@@ -127,48 +131,48 @@ CALCULATION_TYPES = {
 }
 
 # Default calculation values
-DEFAULT_SMA_WINDOW = 20
-DEFAULT_WEIGHT_DIVISOR = 1.0  # For equal weight distribution
+DEFAULT_SMA_WINDOW: int = 20
+DEFAULT_WEIGHT_DIVISOR: float = 1.0  # For equal weight distribution
 
 # Query constants
-QUERY_LIMIT_DEFAULT = 1000
-QUERY_LIMIT_MAX = 10000
+QUERY_LIMIT_DEFAULT: int = 1000
+QUERY_LIMIT_MAX: int = 10000
 
 # Batch size constants
-DEFAULT_BATCH_SIZE = 10000  # Default batch size for database insertions
+DEFAULT_BATCH_SIZE: int = 10000  # Default batch size for database insertions
 
 # PyPDL constants
-PYPDL_DEFAULT_HOST = "gnp-histo.europe.echonet"
-PYPDL_DEFAULT_PORT = 12002
-PYPDL_DEFAULT_USERNAME = "jess05 Macro Quant"
+PYPDL_DEFAULT_HOST: str = "gnp-histo.europe.echonet"
+PYPDL_DEFAULT_PORT: int = 12002
+PYPDL_DEFAULT_USERNAME: str = "jess05 Macro Quant"
 
 # Retry policy constants
-RETRY_POLICY_MAX_RETRIES_DEFAULT = 3
-RETRY_POLICY_DELAY_DEFAULT = 1.0
-RETRY_POLICY_MAX_RETRIES_INGESTION = 3
-RETRY_POLICY_DELAY_INGESTION = 2.0
-RETRY_POLICY_MAX_RETRIES_CSV_LOADER = 2
-RETRY_POLICY_DELAY_CSV_LOADER = 1.0
+RETRY_POLICY_MAX_RETRIES_DEFAULT: int = 3
+RETRY_POLICY_DELAY_DEFAULT: float = 1.0
+RETRY_POLICY_MAX_RETRIES_INGESTION: int = 3
+RETRY_POLICY_DELAY_INGESTION: float = 2.0
+RETRY_POLICY_MAX_RETRIES_CSV_LOADER: int = 2
+RETRY_POLICY_DELAY_CSV_LOADER: float = 1.0
 
 # Data quality constants
 # Timeliness thresholds (in hours)
-MAX_DATA_AGE_HOURS = 24
-MAX_DATA_GAP_MULTIPLIER = 3.0  # Max gap is 3x median gap
+MAX_DATA_AGE_HOURS: int = 24
+MAX_DATA_GAP_MULTIPLIER: float = 3.0  # Max gap is 3x median gap
 
 # Completeness thresholds (percentage)
-MAX_NULL_PERCENTAGE_DEFAULT = 5.0
-MAX_NULL_PERCENTAGE_REQUIRED_FIELDS = 0.0
+MAX_NULL_PERCENTAGE_DEFAULT: float = 5.0
+MAX_NULL_PERCENTAGE_REQUIRED_FIELDS: float = 0.0
 
 # Accuracy thresholds
-MAX_OUTLIER_PERCENTAGE = 5.0  # Max percentage of outliers allowed
+MAX_OUTLIER_PERCENTAGE: float = 5.0  # Max percentage of outliers allowed
 
 # Great Expectations configuration
-GE_DATASOURCE_NAME = "dagster_datasource"
-GE_DATA_CONNECTOR_NAME = "default_runtime_data_connector"
-GE_EXPECTATION_SUITE_PREFIX = "dagster_"
+GE_DATASOURCE_NAME: str = "dagster_datasource"
+GE_DATA_CONNECTOR_NAME: str = "default_runtime_data_connector"
+GE_EXPECTATION_SUITE_PREFIX: str = "dagster_"
 
 # Data quality dimension names
-DATA_QUALITY_DIMENSIONS = [
+DATA_QUALITY_DIMENSIONS: List[str] = [
     "timeliness",
     "completeness",
     "accuracy",
@@ -176,3 +180,8 @@ DATA_QUALITY_DIMENSIONS = [
     "uniqueness",
     "consistency",
 ]
+
+# Database configuration
+# Set to "clickhouse" or "duckdb" to switch between database backends
+# Can be overridden via DATABASE_TYPE environment variable
+DATABASE_TYPE: str = "clickhouse"  # Options: "clickhouse", "duckdb"

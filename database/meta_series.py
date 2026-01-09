@@ -6,6 +6,7 @@ from dagster_quickstart.resources import ClickHouseResource
 from dagster_quickstart.utils.datetime_utils import utc_now_metadata
 from database.models import DataSource, MetaSeriesCreate
 from database.utils import get_next_id, query_to_dict, query_to_dict_list
+from database.utils import DatabaseResource
 
 # Constants to avoid circular imports
 META_SERIES_TABLE = "metaSeries"
@@ -15,9 +16,13 @@ QUERY_LIMIT_DEFAULT = 1000
 class MetaSeriesManager:
     """Manager for meta series operations."""
 
-    def __init__(self, clickhouse: ClickHouseResource):
-        """Initialize with ClickHouse resource."""
-        self.clickhouse = clickhouse
+    def __init__(self, database: DatabaseResource):
+        """Initialize with database resource (ClickHouse or DuckDB).
+
+        Args:
+            database: Database resource instance (ClickHouseResource or DuckDBResource)
+        """
+        self.database = database
 
     def create_meta_series(
         self, meta_series: MetaSeriesCreate, created_by: Optional[str] = None
@@ -26,7 +31,7 @@ class MetaSeriesManager:
         now = utc_now_metadata()
 
         # Get next series_id
-        next_id = get_next_id(self.clickhouse, META_SERIES_TABLE, "series_id")
+        next_id = get_next_id(self.database, META_SERIES_TABLE, "series_id")
 
         # Build query with NULL handling for optional ID fields
         field_id_val = "{field_id:UInt32}" if meta_series.field_type_id is not None else "NULL"
@@ -109,20 +114,20 @@ class MetaSeriesManager:
         if meta_series.ticker_source_id is not None:
             params["ticker_id"] = meta_series.ticker_source_id
 
-        self.clickhouse.execute_command(query, parameters=params)
+        self.database.execute_command(query, parameters=params)
 
         return next_id
 
     def get_meta_series(self, series_id: int) -> Optional[Dict[str, Any]]:
         """Get a meta series by ID."""
         query = f"SELECT * FROM {META_SERIES_TABLE} WHERE series_id = {{id:UInt32}} LIMIT 1"
-        result = self.clickhouse.execute_query(query, parameters={"id": series_id})
+        result = self.database.execute_query(query, parameters={"id": series_id})
         return query_to_dict(result)
 
     def get_meta_series_by_code(self, series_code: str) -> Optional[Dict[str, Any]]:
         """Get a meta series by code."""
         query = f"SELECT * FROM {META_SERIES_TABLE} WHERE series_code = {{code:String}} LIMIT 1"
-        result = self.clickhouse.execute_query(query, parameters={"code": series_code})
+        result = self.database.execute_query(query, parameters={"code": series_code})
         return query_to_dict(result)
 
     def get_active_series(
@@ -146,5 +151,5 @@ class MetaSeriesManager:
         query += " ORDER BY series_id LIMIT {limit:UInt32}"
         params["limit"] = limit
 
-        result = self.clickhouse.execute_query(query, parameters=params)
+        result = self.database.execute_query(query, parameters=params)
         return query_to_dict_list(result)
