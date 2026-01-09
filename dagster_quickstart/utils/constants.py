@@ -182,6 +182,16 @@ DATA_QUALITY_DIMENSIONS: List[str] = [
 ]
 
 # Database configuration
-# Set to "clickhouse" or "duckdb" to switch between database backends
-# Can be overridden via DATABASE_TYPE environment variable
-DATABASE_TYPE: str = "clickhouse"  # Options: "clickhouse", "duckdb"
+# Using DuckDB with S3 as the datalake
+DATABASE_TYPE: str = "duckdb"  # Options: "clickhouse", "duckdb"
+
+# S3 path constants
+S3_BASE_PATH_VALUE_DATA: str = "value-data"
+S3_BASE_PATH_STAGING: str = "staging"
+S3_STAGING_LOOKUP_TABLES: str = "lookup_tables"
+S3_STAGING_META_SERIES: str = "meta_series"
+S3_PARQUET_FILE_NAME: str = "data.parquet"
+
+# SQL query constants
+SQL_FILE_PATH_PLACEHOLDER: str = "$file_path"
+SQL_READ_PARQUET_TEMPLATE: str = "read_parquet('$file_path')"

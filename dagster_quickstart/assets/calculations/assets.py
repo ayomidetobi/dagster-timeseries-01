@@ -8,7 +8,7 @@ from dagster import (
     asset,
 )
 
-from dagster_quickstart.resources import ClickHouseResource
+from dagster_quickstart.resources import DuckDBResource
 from dagster_quickstart.utils.constants import (
     RETRY_POLICY_DELAY_DEFAULT,
     RETRY_POLICY_MAX_RETRIES_DEFAULT,
@@ -31,7 +31,7 @@ from .logic import calculate_sma_series_logic, calculate_weighted_composite_logi
         AssetKey("ingest_ramp_data"),
         AssetKey("ingest_onetick_data"),
     ],  # Depends on schema, metadata and ingestion assets completing first
-    kinds=["pandas", "clickhouse"],
+    kinds=["pandas", "duckdb"],
     owners=["team:mqrm-data-eng"],
     tags={"m360-mqrm": ""},
     retry_policy=RetryPolicy(
@@ -42,7 +42,7 @@ from .logic import calculate_sma_series_logic, calculate_weighted_composite_logi
 def calculate_sma_series(
     context: AssetExecutionContext,
     config: CalculationConfig,
-    clickhouse: ClickHouseResource,
+    duckdb: DuckDBResource,
 ) -> pd.DataFrame:
     """Calculate a simple moving average derived series.
 
@@ -58,7 +58,7 @@ def calculate_sma_series(
         target_date.date(),
     )
 
-    return calculate_sma_series_logic(context, config, clickhouse, target_date)
+    return calculate_sma_series_logic(context, config, duckdb, target_date)
 
 
 @asset(
@@ -73,7 +73,7 @@ def calculate_sma_series(
         AssetKey("ingest_ramp_data"),
         AssetKey("ingest_onetick_data"),
     ],  # Depends on schema, metadata and ingestion assets completing first
-    kinds=["pandas", "clickhouse"],
+    kinds=["pandas", "duckdb"],
     owners=["team:mqrm-data-eng"],
     tags={"m360-mqrm": ""},
     retry_policy=RetryPolicy(
@@ -84,7 +84,7 @@ def calculate_sma_series(
 def calculate_weighted_composite(
     context: AssetExecutionContext,
     config: CalculationConfig,
-    clickhouse: ClickHouseResource,
+    duckdb: DuckDBResource,
 ) -> pd.DataFrame:
     """Calculate a weighted composite derived series.
 
@@ -100,4 +100,4 @@ def calculate_weighted_composite(
         target_date.date(),
     )
 
-    return calculate_weighted_composite_logic(context, config, clickhouse, target_date)
+    return calculate_weighted_composite_logic(context, config, duckdb, target_date)
