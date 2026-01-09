@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 import polars as pl
 from dagster import AssetExecutionContext
 
-from dagster_quickstart.resources import ClickHouseResource
+from dagster_quickstart.resources import DuckDBResource
 from dagster_quickstart.utils.exceptions import DatabaseError
 from dagster_quickstart.utils.helpers import round_six_dp
 from dagster_quickstart.utils.summary import AssetSummary
@@ -343,7 +343,7 @@ def create_ingestion_summary(
 def ingest_data_for_ticker_source(
     context: AssetExecutionContext,
     config: IngestionConfig,
-    clickhouse: ClickHouseResource,
+    duckdb: DuckDBResource,
     ticker_source: TickerSource,
     target_date: datetime,
 ) -> pl.DataFrame:
@@ -355,7 +355,7 @@ def ingest_data_for_ticker_source(
     Args:
         context: Dagster execution context
         config: Ingestion configuration
-        clickhouse: ClickHouse resource
+        duckdb: DuckDB resource
         ticker_source: Ticker source to filter series by
         target_date: Target date for data ingestion (from partition)
 
@@ -380,9 +380,9 @@ def ingest_data_for_ticker_source(
     )
 
     # Initialize managers
-    meta_manager = MetaSeriesManager(clickhouse)
-    lookup_manager = LookupTableManager(clickhouse)
-    value_manager = ValueDataManager(clickhouse)
+    meta_manager = MetaSeriesManager(duckdb)
+    lookup_manager = LookupTableManager(duckdb)
+    value_manager = ValueDataManager(duckdb)
 
     # Get all active metaSeries
     active_series = meta_manager.get_active_series(limit=10000)

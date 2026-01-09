@@ -8,7 +8,7 @@ from dagster import (
     asset,
 )
 
-from dagster_quickstart.resources import ClickHouseResource, PyPDLResource
+from dagster_quickstart.resources import DuckDBResource, PyPDLResource
 from dagster_quickstart.utils.constants import (
     RETRY_POLICY_DELAY_INGESTION,
     RETRY_POLICY_MAX_RETRIES_INGESTION,
@@ -27,7 +27,7 @@ from .logic import ingest_bloomberg_data_for_series
     group_name="bloomberg_ingestion",
     description="Ingest Bloomberg data for a single metaSeries using pyeqdr.pypdl",
     deps=[AssetKey("load_meta_series_from_csv")],
-    kinds=["clickhouse"],
+    kinds=["duckdb"],
     owners=["team:mqrm-data-eng"],
     tags={"m360-mqrm": "", "bloomberg": "", "pypdl": ""},
     retry_policy=RetryPolicy(
@@ -39,7 +39,7 @@ def ingest_bloomberg_data_pypdl(
     context: AssetExecutionContext,
     config: BloombergIngestionConfig,
     pypdl_resource: PyPDLResource,
-    clickhouse: ClickHouseResource,
+    duckdb: DuckDBResource,
 ) -> pl.DataFrame:
     """Ingest Bloomberg data for a single metaSeries using PyPDL.
 
@@ -53,13 +53,13 @@ def ingest_bloomberg_data_pypdl(
     3. Constructs data_source as "bloomberg/ts/{field_type_name}"
     4. Uses ticker as data_code
     5. Fetches data from Bloomberg via PyPDL for the partition date
-    6. Saves data to ClickHouse valueData table
+    6. Saves data to DuckDB valueData table
 
     Args:
         context: Dagster execution context (includes partition keys: date and series)
         config: Bloomberg ingestion configuration
         pypdl_resource: PyPDL resource
-        clickhouse: ClickHouse resource
+        duckdb: DuckDB resource
 
     Returns:
         Summary DataFrame with ingestion results
@@ -96,9 +96,9 @@ def ingest_bloomberg_data_pypdl(
     # Type ignore needed because DummyClickHouseResource implements the same interface
     if config.use_dummy_data:
         context.log.info("Using dummy ClickHouse data for testing")
-        clickhouse = DummyClickHouseResource()  # type: ignore
+        duckdb = DummyClickHouseResource()  # type: ignore
 
     # Run ingestion function for single series and date
     return ingest_bloomberg_data_for_series(
-        context, config, pypdl_resource, clickhouse, series_id, target_date
+        context, config, pypdl_resource, duckdb, series_id, target_date
     )

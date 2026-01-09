@@ -31,11 +31,12 @@ from dagster_quickstart.utils.exceptions import (
     RecordNotFoundError,
 )
 from dagster_quickstart.utils.helpers import (
+    check_series_data_staleness,
     create_calculation_log,
     generate_date_range,
     get_or_validate_meta_series,
     is_empty_row,
-    load_series_data_from_clickhouse,
+    load_series_data_from_duckdb,
     parse_data_source,
     read_csv_safe,
     safe_int,
@@ -76,7 +77,8 @@ __all__ = [
     "validate_csv_columns",
     "read_csv_safe",
     "generate_date_range",
-    "load_series_data_from_clickhouse",
+    "load_series_data_from_duckdb",
+    "check_series_data_staleness",
     "get_or_validate_meta_series",
     "create_calculation_log",
     "update_calculation_log_on_success",

@@ -1,11 +1,17 @@
-"""CSV loading logic for lookup tables and meta series with validation."""
+"""CSV loading logic for lookup tables and meta series with validation.
 
-from typing import Dict
+Uses S3 Parquet files as the datalake for staging data, then processes into DuckDB tables.
+Uses DuckDBResource.save() and load() methods for S3 operations.
+"""
 
-import polars as pl
-from dagster import AssetExecutionContext
+import time
+import uuid
+from typing import Any, Dict, List
 
-from dagster_quickstart.resources import ClickHouseResource
+import pandas as pd
+from dagster import AssetExecutionContext, get_dagster_logger
+
+from dagster_quickstart.resources import DuckDBResource
 from dagster_quickstart.utils.constants import (
     CODE_BASED_LOOKUPS,
     DB_COLUMNS,
@@ -14,26 +20,42 @@ from dagster_quickstart.utils.constants import (
     LOOKUP_TABLE_PROCESSING_ORDER,
     META_SERIES_STAGING_COLUMNS,
     NULL_VALUE_REPRESENTATION,
+    S3_STAGING_LOOKUP_TABLES,
+    S3_STAGING_META_SERIES,
+    SQL_READ_PARQUET_TEMPLATE,
 )
-from dagster_quickstart.utils.exceptions import CSVValidationError
-from dagster_quickstart.utils.helpers import read_csv_safe
+from dagster_quickstart.utils.exceptions import (
+    CSVValidationError,
+    DatabaseInsertError,
+    DatabaseQueryError,
+    ReferentialIntegrityError,
+)
+from dagster_quickstart.utils.helpers import (
+    build_full_s3_path,
+    build_s3_staging_path,
+    load_from_s3_parquet,
+    read_csv_safe,
+    save_to_s3_parquet,
+)
 from database.referential_integrity import ReferentialIntegrityValidator
-from database.schemas import INSERT_META_SERIES_FROM_STAGING_SQL
+from database.schemas import INSERT_META_SERIES_FROM_S3_STAGING_SQL
 
 from .config import MetaSeriesCSVConfig
+
+logger = get_dagster_logger()
 
 
 def load_meta_series_logic(
     context: AssetExecutionContext,
     config: MetaSeriesCSVConfig,
-    clickhouse: ClickHouseResource,
-) -> tuple[pl.DataFrame, Dict[str, int]]:
+    duckdb: DuckDBResource,
+) -> tuple[pd.DataFrame, Dict[str, int]]:
     """Load meta series from CSV file using staging → metaSeries flow.
 
     Args:
         context: Dagster execution context
         config: Meta series CSV configuration
-        clickhouse: ClickHouse resource
+        duckdb: DuckDB resource
 
     Returns:
         Tuple of (DataFrame with loaded meta series results, results dictionary)
@@ -49,10 +71,10 @@ def load_meta_series_logic(
 
     # Use staging → metaSeries flow with SQL-based processing
     context.log.info("Using staging → metaSeries flow with deterministic ID generation")
-    results = process_staging_to_meta_series(context, clickhouse, df)
+    results = process_staging_to_meta_series(context, duckdb, df)
 
-    # Convert dictionary to Polars DataFrame
-    result_df = pl.DataFrame(
+    # Convert dictionary to pandas DataFrame
+    result_df = pd.DataFrame(
         [
             {"series_code": series_code, "series_id": series_id}
             for series_code, series_id in results.items()
@@ -62,151 +84,489 @@ def load_meta_series_logic(
     return result_df, results
 
 
-def process_staging_to_meta_series(
+def _load_staging_data_for_validation(
     context: AssetExecutionContext,
-    clickhouse: ClickHouseResource,
-    df: pl.DataFrame,
-) -> Dict[str, int]:
-    """Process meta series from staging table to metaSeries table using SQL.
-
-    This function implements the staging → metaSeries flow with deterministic sequential IDs.
-    Data flow: CSV → staging_meta_series → metaSeries
-    Uses dictionaries to resolve string lookup values (region, currency, term, tenor, country) to IDs.
+    duckdb: DuckDBResource,
+    staging_s3_path: str,
+    validation_columns: List[str],
+) -> List[Dict[str, Any]]:
+    """Load staging data from S3 Parquet for referential integrity validation.
 
     Args:
         context: Dagster execution context
-        clickhouse: ClickHouse resource
+        duckdb: DuckDB resource with S3 access
+        staging_s3_path: Relative S3 path to staging file
+        validation_columns: List of column names to select
+
+    Returns:
+        List of dictionaries representing staging data rows
+    """
+    columns_str = ", ".join(validation_columns)
+    query_template = (
+        f"SELECT {columns_str} FROM {SQL_READ_PARQUET_TEMPLATE} "
+        "WHERE series_code IS NOT NULL AND series_code != ''"
+    )
+
+    try:
+        df_staging = load_from_s3_parquet(
+            duckdb=duckdb,
+            relative_path=staging_s3_path,
+            query_template=query_template,
+            context=context,
+        )
+
+        if df_staging is not None and not df_staging.empty:
+            return df_staging.to_dict("records")
+        return []
+    except DatabaseQueryError as e:
+        context.log.warning(
+            f"Could not load staging data from S3 for validation: {e}",
+            extra={"staging_path": staging_s3_path},
+        )
+        return []
+
+
+def _validate_meta_series_referential_integrity(
+    context: AssetExecutionContext,
+    duckdb: DuckDBResource,
+    staging_s3_path: str,
+) -> None:
+    """Validate referential integrity of meta series staging data.
+
+    Args:
+        context: Dagster execution context
+        duckdb: DuckDB resource with S3 access
+        staging_s3_path: Relative S3 path to staging file
+
+    Raises:
+        ReferentialIntegrityError: If validation fails
+    """
+    context.log.info("Validating referential integrity for meta series references")
+    validator = ReferentialIntegrityValidator(duckdb)
+
+    validation_columns = ["series_code"] + list(LOOKUP_TABLE_PROCESSING_ORDER)
+    staging_data = _load_staging_data_for_validation(
+        context, duckdb, staging_s3_path, validation_columns
+    )
+
+    try:
+        validator.validate_meta_series_references(context, staging_data)
+        context.log.info("Referential integrity validation passed")
+    except ReferentialIntegrityError:
+        raise
+    except Exception as e:
+        error_msg = f"Referential integrity validation failed: {e}"
+        context.log.error(error_msg)
+        raise ReferentialIntegrityError(error_msg) from e
+
+
+def _insert_meta_series_from_staging(
+    context: AssetExecutionContext,
+    duckdb: DuckDBResource,
+    full_s3_path: str,
+) -> None:
+    """Insert meta series from S3 Parquet staging file into metaSeries table.
+
+    Args:
+        context: Dagster execution context
+        duckdb: DuckDB resource with S3 access
+        full_s3_path: Full S3 path to staging file
+
+    Raises:
+        DatabaseInsertError: If insertion fails
+    """
+    sql = INSERT_META_SERIES_FROM_S3_STAGING_SQL.format(full_s3_path=full_s3_path)
+
+    try:
+        duckdb.execute_command(sql)
+        context.log.info("Successfully inserted meta series from S3 Parquet staging to metaSeries")
+    except Exception as e:
+        error_msg = f"Error inserting meta series from S3 Parquet staging: {e}"
+        context.log.error(error_msg)
+        raise DatabaseInsertError(error_msg) from e
+
+
+def _fetch_meta_series_results(
+    context: AssetExecutionContext, duckdb: DuckDBResource
+) -> Dict[str, int]:
+    """Fetch meta series results (series_code -> series_id mapping).
+
+    Args:
+        context: Dagster execution context
+        duckdb: DuckDB resource with S3 access
+
+    Returns:
+        Dictionary mapping series_code -> series_id
+
+    Raises:
+        DatabaseQueryError: If query fails
+    """
+    query = "SELECT series_id, series_code FROM metaSeries ORDER BY series_id"
+    try:
+        df = duckdb.execute_query(query)
+        results = {}
+        if not df.empty:
+            for _, row in df.iterrows():
+                results[row["series_code"]] = row["series_id"]
+        return results
+    except Exception as e:
+        error_msg = f"Error fetching meta series results: {e}"
+        context.log.error(error_msg)
+        raise DatabaseQueryError(error_msg) from e
+
+
+def process_staging_to_meta_series(
+    context: AssetExecutionContext,
+    duckdb: DuckDBResource,
+    df: pd.DataFrame,
+) -> Dict[str, int]:
+    """Process meta series from S3 Parquet staging to metaSeries table using SQL.
+
+    This function implements the staging → metaSeries flow with deterministic sequential IDs.
+    Data flow: CSV → S3 Parquet (staging) → metaSeries (DuckDB table)
+    Reads from S3 Parquet files using DuckDBResource.load() and read_parquet().
+
+    Args:
+        context: Dagster execution context
+        duckdb: DuckDB resource with S3 access
         df: Polars DataFrame with meta series data
 
     Returns:
         Dictionary mapping series_code -> series_id
-    """
-    context.log.info("Processing meta series from staging to metaSeries using SQL")
 
-    # Step 1: Load CSV into staging table
-    load_csv_to_staging_table(
-        context, clickhouse, df, "staging_meta_series", META_SERIES_STAGING_COLUMNS
+    Raises:
+        ReferentialIntegrityError: If referential integrity validation fails
+        DatabaseInsertError: If insertion fails
+        DatabaseQueryError: If query fails
+    """
+    context.log.info("Processing meta series from S3 Parquet staging to metaSeries using SQL")
+
+    # Step 1: Save CSV data to S3 Parquet as staging
+    staging_s3_path = load_csv_to_staging_s3(
+        context, duckdb, df, S3_STAGING_META_SERIES, META_SERIES_STAGING_COLUMNS
     )
 
+    # Get full S3 path for querying
+    bucket = duckdb.get_bucket()
+    full_s3_path = build_full_s3_path(bucket, staging_s3_path)
+
     # Step 1.5: Validate referential integrity before insertion
-    context.log.info("Validating referential integrity for meta series references")
-    validator = ReferentialIntegrityValidator(clickhouse)
-
-    # Fetch staging data for validation
-    # Build columns list: series_code + all lookup types from constants
-    validation_columns = ["series_code"] + list(LOOKUP_TABLE_PROCESSING_ORDER)
-    columns_str = ", ".join(validation_columns)
-
-    query = f"""
-    SELECT {columns_str}
-    FROM staging_meta_series
-    WHERE series_code IS NOT NULL AND series_code != ''
-    """
-    result = clickhouse.execute_query(query)
-    staging_data = []
-    if hasattr(result, "result_rows") and result.result_rows:
-        for row in result.result_rows:
-            staging_data.append(dict(zip(validation_columns, row)))
-
-    # Validate referential integrity - this will raise InvalidLookupReferenceError if validation fails
-    try:
-        validator.validate_meta_series_references(context, staging_data)
-    except Exception as e:
-        context.log.error(f"Referential integrity validation failed: {e}")
-        raise
+    _validate_meta_series_referential_integrity(context, duckdb, staging_s3_path)
 
     # Step 2: Insert into metaSeries using SQL with LEFT JOIN-based ID resolution
-    # Resolve all lookup name values to IDs using LEFT JOINs with lookup tables
-    # All lookup values come as names from CSV and are resolved to IDs
-    sql = INSERT_META_SERIES_FROM_STAGING_SQL
+    _insert_meta_series_from_staging(context, duckdb, full_s3_path)
 
-    try:
-        clickhouse.execute_command(sql)
-        context.log.info("Successfully inserted meta series from staging to metaSeries")
-
-        # Fetch results (series_code -> series_id mapping)
-        query = "SELECT series_id, series_code FROM metaSeries ORDER BY series_id"
-        result = clickhouse.execute_query(query)
-        results = {}
-        if hasattr(result, "result_rows") and result.result_rows:
-            for row in result.result_rows:
-                results[row[1]] = row[0]
-
-        context.log.info(f"Loaded {len(results)} meta series records")
-        return results
-
-    except Exception as e:
-        context.log.error(f"Error processing meta series from staging: {e}")
-        raise
+    # Step 3: Fetch results (series_code -> series_id mapping)
+    results = _fetch_meta_series_results(context, duckdb)
+    context.log.info(f"Loaded {len(results)} meta series records")
+    return results
 
 
-def load_csv_to_staging_table(
-    context: AssetExecutionContext,
-    clickhouse: ClickHouseResource,
-    df: pl.DataFrame,
-    staging_table_name: str,
-    staging_columns: list[str],
-) -> None:
-    """Load CSV data into a staging table (reusable function).
+def _filter_staging_columns(df: pd.DataFrame, staging_columns: List[str]) -> pd.DataFrame:
+    """Filter DataFrame to only include available staging columns.
 
     Args:
-        context: Dagster execution context
-        clickhouse: ClickHouse resource
         df: Polars DataFrame with data
-        staging_table_name: Name of the staging table (e.g., "staging_lookup_tables")
-        staging_columns: List of column names expected in staging table
-    """
-    context.log.info(f"Truncating {staging_table_name} for fresh load")
-    clickhouse.execute_command(f"TRUNCATE TABLE IF EXISTS {staging_table_name}")
+        staging_columns: List of column names expected in staging data
 
-    # Filter DataFrame to only include staging columns that exist
+    Returns:
+        Filtered DataFrame with only available staging columns
+
+    Raises:
+        CSVValidationError: If no staging columns are available
+    """
     available_columns = [col for col in staging_columns if col in df.columns]
     if not available_columns:
         raise CSVValidationError(
             f"CSV DataFrame must contain at least one of these columns: {staging_columns}"
         )
+    return df[available_columns]
 
-    df_staging = df.select(available_columns)
 
-    # Convert to list of lists (rows) - clickhouse-connect expects list of lists/tuples
-    # Each row is a list/tuple of values in the same order as available_columns
-    data = df_staging.to_numpy().tolist()
-    context.log.info(f"Inserting {len(data)} rows into {staging_table_name}")
+def _register_temp_table_for_staging(duckdb: DuckDBResource, df_staging: pd.DataFrame) -> str:
+    """Register DataFrame as temporary table in DuckDB.
 
-    # Insert data using clickhouse-connect (works over HTTP)
-    clickhouse.insert_data(
-        table=staging_table_name,
-        data=data,
-        column_names=available_columns,
+    Args:
+        duckdb: DuckDB resource
+        df_staging: Polars DataFrame to register
+
+    Returns:
+        Temporary table name
+    """
+    temp_table = f"_temp_staging_{uuid.uuid4().hex}"
+    duckdb._con.register(temp_table, df_staging)
+    return temp_table
+
+
+def _unregister_temp_table(duckdb: DuckDBResource, temp_table: str) -> None:
+    """Unregister temporary table from DuckDB.
+
+    Args:
+        duckdb: DuckDB resource
+        temp_table: Temporary table name to unregister
+    """
+    try:
+        duckdb._con.unregister(temp_table)
+    except Exception:
+        pass  # Table may already be unregistered
+
+
+def load_csv_to_staging_s3(
+    context: AssetExecutionContext,
+    duckdb: DuckDBResource,
+    df: pd.DataFrame,
+    staging_type: str,
+    staging_columns: List[str],
+) -> str:
+    """Load CSV data to S3 Parquet file as staging data.
+
+    Uses DuckDBResource.save() method to write staging data to S3 Parquet files.
+    Returns the S3 path (relative to bucket) for the staging file.
+
+    Args:
+        context: Dagster execution context
+        duckdb: DuckDB resource with S3 access
+        df: Polars DataFrame with data
+        staging_type: Type of staging data (e.g., "meta_series", "lookup_tables")
+        staging_columns: List of column names expected in staging data
+
+    Returns:
+        Relative S3 path to the staging Parquet file
+
+    Raises:
+        CSVValidationError: If no staging columns are available
+        DatabaseQueryError: If save operation fails
+    """
+    # Filter DataFrame to only include staging columns that exist
+    df_staging = _filter_staging_columns(df, staging_columns)
+
+    # Generate unique S3 path for staging data
+    timestamp = int(time.time())
+    unique_id = uuid.uuid4().hex[:8]
+    relative_path = build_s3_staging_path(staging_type, timestamp, unique_id)
+
+    context.log.info(
+        f"Saving {len(df_staging)} rows to S3 staging",
+        extra={"staging_path": relative_path, "row_count": len(df_staging)},
     )
 
-    context.log.info(f"Successfully loaded {len(data)} rows into {staging_table_name}")
+    # Register DataFrame in DuckDB connection
+    temp_table = _register_temp_table_for_staging(duckdb, df_staging)
+
+    try:
+        # Use helper function to save to S3 Parquet
+        select_query = f"SELECT * FROM {temp_table}"
+        save_to_s3_parquet(
+            duckdb=duckdb,
+            relative_path=relative_path,
+            select_query=select_query,
+            context=context,
+        )
+        context.log.info(
+            f"Successfully saved {len(df_staging)} rows to S3 staging",
+            extra={"staging_path": relative_path, "row_count": len(df_staging)},
+        )
+        return relative_path
+    finally:
+        # Clean up temp table
+        _unregister_temp_table(duckdb, temp_table)
+
+
+def _build_lookup_insert_sql(
+    lookup_type: str,
+    table_name: str,
+    id_column: str,
+    name_column: str,
+    staging_column: str,
+    full_s3_path: str,
+) -> str:
+    """Build SQL query for inserting lookup table data from S3 Parquet staging.
+
+    Args:
+        lookup_type: Type of lookup table
+        table_name: Target table name
+        id_column: ID column name
+        name_column: Name column name
+        staging_column: Staging column name
+        full_s3_path: Full S3 path to staging file
+
+    Returns:
+        SQL query string for inserting lookup data
+    """
+    if lookup_type in CODE_BASED_LOOKUPS:
+        code_field, name_field, check_field = CODE_BASED_LOOKUPS[lookup_type]
+        insert_fields = f"{id_column}, {code_field}, {name_field}"
+        select_fields = f"{staging_column} AS {code_field}, {staging_column} AS {name_field}"
+    else:
+        insert_fields = f"{id_column}, {name_column}"
+        select_fields = f"{staging_column} AS {name_column}"
+        check_field = name_column
+
+    return f"""
+    INSERT INTO {table_name} ({insert_fields}, created_at, updated_at)
+    SELECT
+        (SELECT COALESCE(MAX({id_column}), 0) FROM {table_name}) +
+        row_number() OVER (ORDER BY {staging_column}) AS {id_column},
+        {select_fields},
+        CURRENT_TIMESTAMP AS created_at,
+        CURRENT_TIMESTAMP AS updated_at
+    FROM (
+        SELECT DISTINCT {staging_column}
+        FROM read_parquet('{full_s3_path}')
+        WHERE {staging_column} IS NOT NULL
+            AND {staging_column} != ''
+            AND {staging_column} NOT IN (SELECT {check_field} FROM {table_name})
+    )
+    ORDER BY {staging_column}
+    """
+
+
+def _insert_lookup_table_from_staging(
+    context: AssetExecutionContext,
+    duckdb: DuckDBResource,
+    lookup_type: str,
+    full_s3_path: str,
+) -> None:
+    """Insert lookup table data from S3 Parquet staging into dimension table.
+
+    Args:
+        context: Dagster execution context
+        duckdb: DuckDB resource with S3 access
+        lookup_type: Type of lookup table
+        full_s3_path: Full S3 path to staging file
+
+    Raises:
+        DatabaseInsertError: If insertion fails
+    """
+    table_name = DB_TABLES[lookup_type]
+    id_column, name_column = DB_COLUMNS[lookup_type]
+    staging_column = lookup_type
+
+    sql = _build_lookup_insert_sql(
+        lookup_type=lookup_type,
+        table_name=table_name,
+        id_column=id_column,
+        name_column=name_column,
+        staging_column=staging_column,
+        full_s3_path=full_s3_path,
+    )
+
+    try:
+        duckdb.execute_command(sql)
+        context.log.info(
+            f"Successfully inserted {lookup_type} from S3 Parquet staging to {table_name}"
+        )
+    except Exception as e:
+        error_msg = f"Error inserting {lookup_type} from S3 Parquet staging: {e}"
+        context.log.error(error_msg)
+        raise DatabaseInsertError(error_msg) from e
+
+
+def _fetch_lookup_table_results(
+    context: AssetExecutionContext,
+    duckdb: DuckDBResource,
+    lookup_type: str,
+) -> Dict[str, int]:
+    """Fetch lookup table results (name -> id mapping).
+
+    Args:
+        context: Dagster execution context
+        duckdb: DuckDB resource with S3 access
+        lookup_type: Type of lookup table
+
+    Returns:
+        Dictionary mapping name -> id
+
+    Raises:
+        DatabaseQueryError: If query fails
+    """
+    table_name = DB_TABLES[lookup_type]
+    id_column, name_column = DB_COLUMNS[lookup_type]
+
+    query = f"SELECT {id_column}, {name_column} FROM {table_name} ORDER BY {id_column}"
+    try:
+        df = duckdb.execute_query(query)
+        results = {}
+        if not df.empty:
+            for _, row in df.iterrows():
+                results[row[name_column]] = row[id_column]
+        return results
+    except Exception as e:
+        error_msg = f"Error fetching {lookup_type} results: {e}"
+        context.log.error(error_msg)
+        raise DatabaseQueryError(error_msg) from e
+
+
+def _process_single_lookup_table(
+    context: AssetExecutionContext,
+    duckdb: DuckDBResource,
+    lookup_type: str,
+    full_s3_path: str,
+) -> Dict[str, int]:
+    """Process a single lookup table from S3 Parquet staging to dimension table.
+
+    Args:
+        context: Dagster execution context
+        duckdb: DuckDB resource with S3 access
+        lookup_type: Type of lookup table
+        full_s3_path: Full S3 path to staging file
+
+    Returns:
+        Dictionary mapping name -> id
+
+    Raises:
+        DatabaseInsertError: If insertion fails
+        DatabaseQueryError: If query fails
+    """
+    table_name = DB_TABLES[lookup_type]
+    context.log.info(
+        f"Processing {lookup_type} from S3 Parquet staging to {table_name}",
+        extra={"lookup_type": lookup_type, "table_name": table_name},
+    )
+
+    _insert_lookup_table_from_staging(context, duckdb, lookup_type, full_s3_path)
+    results = _fetch_lookup_table_results(context, duckdb, lookup_type)
+
+    context.log.info(
+        f"Loaded {len(results)} {lookup_type} records",
+        extra={"lookup_type": lookup_type, "record_count": len(results)},
+    )
+    return results
 
 
 def process_staging_to_dimensions(
     context: AssetExecutionContext,
-    clickhouse: ClickHouseResource,
-    df: pl.DataFrame,
+    duckdb: DuckDBResource,
+    df: pd.DataFrame,
 ) -> Dict[str, Dict[str, int]]:
-    """Process lookup tables from staging table to dimension tables using SQL.
+    """Process lookup tables from S3 Parquet staging to dimension tables using SQL.
 
     This function implements the staging → dimensions flow with deterministic sequential IDs.
-    Data flow: CSV → staging_lookup_tables → dimension_tables
+    Data flow: CSV → S3 Parquet (staging) → dimension_tables (DuckDB)
+    Reads from S3 Parquet files using read_parquet().
 
     Args:
         context: Dagster execution context
-        clickhouse: ClickHouse resource
+        duckdb: DuckDB resource with S3 access
         df: Polars DataFrame with lookup table data
 
     Returns:
         Dictionary mapping lookup_type -> {name: id}
-    """
-    context.log.info("Processing lookup tables from staging to dimensions using SQL")
 
-    # Step 1: Load CSV into staging table
-    load_csv_to_staging_table(
-        context, clickhouse, df, "staging_lookup_tables", LOOKUP_TABLE_COLUMNS
+    Raises:
+        DatabaseInsertError: If insertion fails
+        DatabaseQueryError: If query fails
+    """
+    context.log.info("Processing lookup tables from S3 Parquet staging to dimensions using SQL")
+
+    # Step 1: Save CSV data to S3 Parquet as staging
+    staging_s3_path = load_csv_to_staging_s3(
+        context, duckdb, df, S3_STAGING_LOOKUP_TABLES, LOOKUP_TABLE_COLUMNS
     )
+
+    # Get full S3 path for querying
+    bucket = duckdb.get_bucket()
+    full_s3_path = build_full_s3_path(bucket, staging_s3_path)
 
     all_results: Dict[str, Dict[str, int]] = {}
     available_columns = [col for col in LOOKUP_TABLE_COLUMNS if col in df.columns]
@@ -216,60 +576,14 @@ def process_staging_to_dimensions(
         if lookup_type not in available_columns:
             continue
 
-        staging_column = lookup_type
-        table_name = DB_TABLES[lookup_type]
-        id_column, name_column = DB_COLUMNS[lookup_type]
-
-        context.log.info(f"Processing {lookup_type} from staging to {table_name}")
-
         try:
-            # Determine insert fields and select fields based on lookup type
-            # Simple lookups: just id, name, timestamps
-            # Code-based lookups: id, name/code fields, timestamps
-            if lookup_type in CODE_BASED_LOOKUPS:
-                code_field, name_field, check_field = CODE_BASED_LOOKUPS[lookup_type]
-                insert_fields = f"{id_column}, {code_field}, {name_field}"
-                select_fields = (
-                    f"{staging_column} AS {code_field}, {staging_column} AS {name_field}"
-                )
-            else:  # Simple lookups: asset_class, data_type, structure_type, etc.
-                insert_fields = f"{id_column}, {name_column}"
-                select_fields = f"{staging_column} AS {name_column}"
-                check_field = name_column
-
-            # Generate and execute SQL (same pattern for all lookup types)
-            sql = f"""
-            INSERT INTO {table_name} ({insert_fields}, created_at, updated_at)
-            SELECT
-                (SELECT if(max({id_column}) IS NULL, 0, max({id_column})) FROM {table_name}) +
-                row_number() OVER (ORDER BY {staging_column}) AS {id_column},
-                {select_fields},
-                now64(6) AS created_at,
-                now64(6) AS updated_at
-            FROM (
-                SELECT DISTINCT {staging_column}
-                FROM staging_lookup_tables
-                WHERE {staging_column} IS NOT NULL
-                    AND {staging_column} != ''
-                    AND {staging_column} NOT IN (SELECT {check_field} FROM {table_name})
-            )
-            ORDER BY {staging_column}
-            """
-            clickhouse.execute_command(sql)
-
-            query = f"SELECT {id_column}, {name_column} FROM {table_name} ORDER BY {id_column}"
-            result = clickhouse.execute_query(query)
-            results = {}
-            if hasattr(result, "result_rows") and result.result_rows:
-                for row in result.result_rows:
-                    lookup_id, lookup_name = row[0], row[1]
-                    results[lookup_name] = lookup_id
-
+            results = _process_single_lookup_table(context, duckdb, lookup_type, full_s3_path)
             all_results[lookup_type] = results
-            context.log.info(f"Loaded {len(results)} {lookup_type} records")
-
+        except (DatabaseInsertError, DatabaseQueryError):
+            raise  # Re-raise domain-specific exceptions
         except Exception as e:
-            context.log.error(f"Error processing {lookup_type}: {e}")
-            raise
+            error_msg = f"Unexpected error processing {lookup_type}: {e}"
+            context.log.error(error_msg)
+            raise DatabaseInsertError(error_msg) from e
 
     return all_results

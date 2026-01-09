@@ -8,7 +8,7 @@ from dagster import (
     asset,
 )
 
-from dagster_quickstart.resources import ClickHouseResource
+from dagster_quickstart.resources import DuckDBResource
 from dagster_quickstart.utils.constants import (
     RETRY_POLICY_DELAY_INGESTION,
     RETRY_POLICY_MAX_RETRIES_INGESTION,
@@ -25,7 +25,7 @@ from .logic import ingest_data_for_ticker_source
     description="Ingest raw time-series data from LSEG for all active series",
     deps=[AssetKey("load_meta_series_from_csv")],
     io_manager_key="polars_parquet_io_manager",
-    kinds=["clickhouse"],
+    kinds=["duckdb"],
     owners=["team:mqrm-data-eng"],
     tags={"m360-mqrm": ""},
     retry_policy=RetryPolicy(
@@ -36,7 +36,7 @@ from .logic import ingest_data_for_ticker_source
 def ingest_lseg_data(
     context: AssetExecutionContext,
     config: IngestionConfig,
-    clickhouse: ClickHouseResource,
+    duckdb: DuckDBResource,
 ) -> pl.DataFrame:
     """Ingest data from LSEG source for all active series.
 
@@ -47,7 +47,7 @@ def ingest_lseg_data(
     Args:
         context: Dagster execution context (includes partition key)
         config: Ingestion configuration
-        clickhouse: ClickHouse resource
+        duckdb: DuckDB resource
 
     Returns:
         Summary DataFrame with ingestion results
@@ -56,9 +56,7 @@ def ingest_lseg_data(
     target_date = get_partition_date(partition_key)
     context.log.info("Processing partition %s (date: %s)", partition_key, target_date.date())
 
-    return ingest_data_for_ticker_source(
-        context, config, clickhouse, TickerSource.LSEG, target_date
-    )
+    return ingest_data_for_ticker_source(context, config, duckdb, TickerSource.LSEG, target_date)
 
 
 @asset(
@@ -66,7 +64,7 @@ def ingest_lseg_data(
     description="Ingest raw time-series data from Hawkeye for all active series",
     deps=[AssetKey("load_meta_series_from_csv")],
     io_manager_key="polars_parquet_io_manager",
-    kinds=["clickhouse"],
+    kinds=["duckdb"],
     owners=["team:mqrm-data-eng"],
     tags={"m360-mqrm": ""},
     retry_policy=RetryPolicy(
@@ -77,7 +75,7 @@ def ingest_lseg_data(
 def ingest_hawkeye_data(
     context: AssetExecutionContext,
     config: IngestionConfig,
-    clickhouse: ClickHouseResource,
+    duckdb: DuckDBResource,
 ) -> pl.DataFrame:
     """Ingest data from Hawkeye source for all active series.
 
@@ -88,7 +86,7 @@ def ingest_hawkeye_data(
     Args:
         context: Dagster execution context (includes partition key)
         config: Ingestion configuration
-        clickhouse: ClickHouse resource
+        duckdb: DuckDB resource
 
     Returns:
         Summary DataFrame with ingestion results
@@ -97,9 +95,7 @@ def ingest_hawkeye_data(
     target_date = get_partition_date(partition_key)
     context.log.info("Processing partition %s (date: %s)", partition_key, target_date.date())
 
-    return ingest_data_for_ticker_source(
-        context, config, clickhouse, TickerSource.HAWKEYE, target_date
-    )
+    return ingest_data_for_ticker_source(context, config, duckdb, TickerSource.HAWKEYE, target_date)
 
 
 @asset(
@@ -107,7 +103,7 @@ def ingest_hawkeye_data(
     description="Ingest raw time-series data from Ramp for all active series",
     deps=[AssetKey("load_meta_series_from_csv")],
     io_manager_key="polars_parquet_io_manager",
-    kinds=["clickhouse"],
+    kinds=["duckdb"],
     owners=["team:mqrm-data-eng"],
     tags={"m360-mqrm": ""},
     retry_policy=RetryPolicy(
@@ -118,7 +114,7 @@ def ingest_hawkeye_data(
 def ingest_ramp_data(
     context: AssetExecutionContext,
     config: IngestionConfig,
-    clickhouse: ClickHouseResource,
+    duckdb: DuckDBResource,
 ) -> pl.DataFrame:
     """Ingest data from Ramp source for all active series.
 
@@ -129,7 +125,7 @@ def ingest_ramp_data(
     Args:
         context: Dagster execution context (includes partition key)
         config: Ingestion configuration
-        clickhouse: ClickHouse resource
+        duckdb: DuckDB resource
 
     Returns:
         Summary DataFrame with ingestion results
@@ -138,9 +134,7 @@ def ingest_ramp_data(
     target_date = get_partition_date(partition_key)
     context.log.info("Processing partition %s (date: %s)", partition_key, target_date.date())
 
-    return ingest_data_for_ticker_source(
-        context, config, clickhouse, TickerSource.RAMP, target_date
-    )
+    return ingest_data_for_ticker_source(context, config, duckdb, TickerSource.RAMP, target_date)
 
 
 @asset(
@@ -148,7 +142,7 @@ def ingest_ramp_data(
     description="Ingest raw time-series data from OneTick for all active series",
     deps=[AssetKey("load_meta_series_from_csv")],
     io_manager_key="polars_parquet_io_manager",
-    kinds=["clickhouse"],
+    kinds=["duckdb"],
     owners=["team:mqrm-data-eng"],
     tags={"m360-mqrm": ""},
     retry_policy=RetryPolicy(
@@ -159,7 +153,7 @@ def ingest_ramp_data(
 def ingest_onetick_data(
     context: AssetExecutionContext,
     config: IngestionConfig,
-    clickhouse: ClickHouseResource,
+    duckdb: DuckDBResource,
 ) -> pl.DataFrame:
     """Ingest data from OneTick source for all active series.
 
@@ -170,7 +164,7 @@ def ingest_onetick_data(
     Args:
         context: Dagster execution context (includes partition key)
         config: Ingestion configuration
-        clickhouse: ClickHouse resource
+        duckdb: DuckDB resource
 
     Returns:
         Summary DataFrame with ingestion results
@@ -179,9 +173,7 @@ def ingest_onetick_data(
     target_date = get_partition_date(partition_key)
     context.log.info("Processing partition %s (date: %s)", partition_key, target_date.date())
 
-    return ingest_data_for_ticker_source(
-        context, config, clickhouse, TickerSource.ONETICK, target_date
-    )
+    return ingest_data_for_ticker_source(context, config, duckdb, TickerSource.ONETICK, target_date)
 
 
 @asset(
@@ -189,7 +181,7 @@ def ingest_onetick_data(
     description="Ingest raw time-series data from Bloomberg for all active series",
     deps=[AssetKey("load_meta_series_from_csv")],
     io_manager_key="polars_parquet_io_manager",
-    kinds=["clickhouse"],
+    kinds=["duckdb"],
     owners=["team:mqrm-data-eng"],
     tags={"m360-mqrm": ""},
     retry_policy=RetryPolicy(
@@ -200,7 +192,7 @@ def ingest_onetick_data(
 def ingest_bloomberg_data(
     context: AssetExecutionContext,
     config: IngestionConfig,
-    clickhouse: ClickHouseResource,
+    duckdb: DuckDBResource,
 ) -> pl.DataFrame:
     """Ingest data from Bloomberg source for all active series.
 
@@ -211,7 +203,7 @@ def ingest_bloomberg_data(
     Args:
         context: Dagster execution context (includes partition key)
         config: Ingestion configuration
-        clickhouse: ClickHouse resource
+        duckdb: DuckDB resource
 
     Returns:
         Summary DataFrame with ingestion results
@@ -221,5 +213,5 @@ def ingest_bloomberg_data(
     context.log.info("Processing partition %s (date: %s)", partition_key, target_date.date())
 
     return ingest_data_for_ticker_source(
-        context, config, clickhouse, TickerSource.BLOOMBERG, target_date
+        context, config, duckdb, TickerSource.BLOOMBERG, target_date
     )

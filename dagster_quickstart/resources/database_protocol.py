@@ -1,7 +1,6 @@
 """Protocol/interface for database resources.
 
-This protocol defines the common interface that both ClickHouse and DuckDB
-resources must implement, allowing managers to work with either database.
+This protocol defines the interface for DuckDB resources with S3 as the datalake.
 """
 
 from contextlib import contextmanager
@@ -10,13 +9,12 @@ from typing import Any, Iterator, Optional, Protocol
 
 
 class DatabaseResource(Protocol):
-    """Protocol defining the interface for database resources.
+    """Protocol defining the interface for DuckDB database resources.
 
-    Both ClickHouseResource and DuckDBResource must implement this interface
-    to allow managers to work with either database seamlessly.
+    DuckDBResource implements this interface for working with DuckDB and S3.
     """
 
-    def execute_query(self, query: str, parameters: Optional[dict] = None) -> Any:
+    def execute_query(self, query: str, parameters: Optional[list] = None) -> Any:
         """Execute a query and return results.
 
         Args:
@@ -28,7 +26,7 @@ class DatabaseResource(Protocol):
         """
         ...
 
-    def execute_command(self, command: str, parameters: Optional[dict] = None) -> None:
+    def execute_command(self, command: str, parameters: Optional[list] = None) -> None:
         """Execute a command (DDL/DML) without returning results.
 
         Args:

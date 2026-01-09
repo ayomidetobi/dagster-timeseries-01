@@ -6,7 +6,7 @@ from typing import Any
 import pandas as pd
 from dagster import AssetExecutionContext
 
-from dagster_quickstart.resources import ClickHouseResource
+from dagster_quickstart.resources import DuckDBResource
 from dagster_quickstart.utils.constants import (
     CALCULATION_TYPES,
     DEFAULT_SMA_WINDOW,
@@ -16,7 +16,7 @@ from dagster_quickstart.utils.exceptions import CalculationError, MetaSeriesNotF
 from dagster_quickstart.utils.helpers import (
     create_calculation_log,
     get_or_validate_meta_series,
-    load_series_data_from_clickhouse,
+    load_series_data_from_duckdb,
     update_calculation_log_on_error,
     update_calculation_log_on_success,
 )
@@ -30,7 +30,7 @@ from .config import CalculationConfig
 def calculate_sma_series_logic(
     context: AssetExecutionContext,
     config: CalculationConfig,
-    clickhouse: ClickHouseResource,
+    duckdb: DuckDBResource,
     target_date: datetime,
 ) -> pd.DataFrame:
     """Calculate a simple moving average derived series.
@@ -38,7 +38,7 @@ def calculate_sma_series_logic(
     Args:
         context: Dagster execution context
         config: Calculation configuration
-        clickhouse: ClickHouse resource
+        duckdb: DuckDB resource
         target_date: Target date for calculation (from partition)
 
     Returns:
@@ -48,9 +48,9 @@ def calculate_sma_series_logic(
         MetaSeriesNotFoundError: If derived series not found
         CalculationError: If calculation fails
     """
-    meta_manager = MetaSeriesManager(clickhouse)
-    dep_manager = DependencyManager(clickhouse)
-    calc_manager = CalculationLogManager(clickhouse)
+    meta_manager = MetaSeriesManager(duckdb)
+    dep_manager = DependencyManager(duckdb)
+    calc_manager = CalculationLogManager(duckdb)
 
     # Get derived series metadata
     derived_series = get_or_validate_meta_series(
@@ -86,7 +86,7 @@ def calculate_sma_series_logic(
         all_data = []
         for dep in parent_deps:
             parent_id = dep["parent_series_id"]
-            df = load_series_data_from_clickhouse(clickhouse, parent_id)
+            df = load_series_data_from_duckdb(duckdb, parent_id)
             if df is not None:
                 # Filter data to partition date
                 df = df[df["timestamp"] <= target_date]
@@ -139,7 +139,7 @@ def calculate_sma_series_logic(
 def calculate_weighted_composite_logic(
     context: AssetExecutionContext,
     config: CalculationConfig,
-    clickhouse: ClickHouseResource,
+    duckdb: DuckDBResource,
     target_date: datetime,
 ) -> pd.DataFrame:
     """Calculate a weighted composite derived series.
@@ -147,7 +147,7 @@ def calculate_weighted_composite_logic(
     Args:
         context: Dagster execution context
         config: Calculation configuration
-        clickhouse: ClickHouse resource
+        duckdb: DuckDB resource
         target_date: Target date for calculation (from partition)
 
     Returns:
@@ -157,9 +157,9 @@ def calculate_weighted_composite_logic(
         MetaSeriesNotFoundError: If derived series not found
         CalculationError: If calculation fails
     """
-    meta_manager = MetaSeriesManager(clickhouse)
-    dep_manager = DependencyManager(clickhouse)
-    calc_manager = CalculationLogManager(clickhouse)
+    meta_manager = MetaSeriesManager(duckdb)
+    dep_manager = DependencyManager(duckdb)
+    calc_manager = CalculationLogManager(duckdb)
 
     # Get derived series
     derived_series = get_or_validate_meta_series(
@@ -196,7 +196,7 @@ def calculate_weighted_composite_logic(
             parent_id = dep["parent_series_id"]
             weight = dep.get("weight", DEFAULT_WEIGHT_DIVISOR / len(parent_deps))
 
-            df = load_series_data_from_clickhouse(clickhouse, parent_id)
+            df = load_series_data_from_duckdb(duckdb, parent_id)
             if df is not None:
                 # Filter data to partition date
                 df = df[df["timestamp"] <= target_date]

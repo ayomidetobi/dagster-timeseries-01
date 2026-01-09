@@ -65,8 +65,10 @@ def validate_foreign_keys(
             query = f"SELECT DISTINCT {lookup_column} FROM {lookup_table}"
             lookup_result = clickhouse.execute_query(query)
 
-            if hasattr(lookup_result, "result_rows"):
-                valid_ids = {row[0] for row in lookup_result.result_rows if row[0] is not None}
+            if isinstance(lookup_result, pd.DataFrame) and not lookup_result.empty:
+                # Extract first column (ID column) from DataFrame
+                id_column = lookup_result.columns[0]
+                valid_ids = set(lookup_result[id_column].dropna().astype(int))
             else:
                 valid_ids = set()
 
