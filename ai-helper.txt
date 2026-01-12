@@ -34,3 +34,17 @@ Code must be production-grade, deterministic, and self-healing.
 follow good folder structure 
 
 also consider time and memory complexity
+
+Use Intention-Revealing Names
+
+Avoid Disinformation
+
+Make Meaningful Distinctions
+
+Use Pronounceable Names
+
+Use Searchable Names
+
+Avoid Encodings
+
+Avoid Mental Mapping

@@ -1,16 +1,14 @@
 """Database utility functions for common operations."""
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
-from typing import Union
-
-from dagster_quickstart.resources import ClickHouseResource, DuckDBResource
+from dagster_quickstart.resources import DuckDBResource
+from dagster_quickstart.utils.datetime_utils import utc_now_metadata
 
 # Type alias for database resources
 # Imported from central location to avoid duplication
-DatabaseResource = Union[ClickHouseResource, DuckDBResource]
-from dagster_quickstart.utils.datetime_utils import utc_now_metadata
+DatabaseResource = Union[DuckDBResource]
 
 
 def get_next_id(database: DatabaseResource, table_name: str, id_column: str) -> int:
@@ -145,7 +143,7 @@ def execute_update_query(
 
 
 def execute_insert_query(
-    clickhouse: ClickHouseResource,
+    database: DatabaseResource,
     table_name: str,
     id_column: str,
     record_id: int,
@@ -200,7 +198,7 @@ def execute_insert_query(
     VALUES ({', '.join(value_placeholders)})
     """
 
-    clickhouse.execute_command(query, parameters=params)
+    database.execute_command(query, parameters=params)
 
 
 def query_to_dict_list(

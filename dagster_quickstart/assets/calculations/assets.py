@@ -23,14 +23,13 @@ from .logic import calculate_sma_series_logic, calculate_weighted_composite_logi
     group_name="calculations",
     description="Calculate a simple moving average derived series",
     deps=[
-        AssetKey("init_database_schema"),  # Database schema must be initialized first
         AssetKey("load_meta_series_from_csv"),  # Meta series must exist before calculation
         AssetKey("ingest_bloomberg_data"),
         AssetKey("ingest_lseg_data"),
         AssetKey("ingest_hawkeye_data"),
         AssetKey("ingest_ramp_data"),
         AssetKey("ingest_onetick_data"),
-    ],  # Depends on schema, metadata and ingestion assets completing first
+    ],  # Depends on metadata and ingestion assets completing first
     kinds=["pandas", "duckdb"],
     owners=["team:mqrm-data-eng"],
     tags={"m360-mqrm": ""},
@@ -65,14 +64,13 @@ def calculate_sma_series(
     group_name="calculations",
     description="Calculate a weighted composite derived series",
     deps=[
-        AssetKey("init_database_schema"),  # Database schema must be initialized first
         AssetKey("load_meta_series_from_csv"),  # Meta series must exist before calculation
         AssetKey("ingest_bloomberg_data"),
         AssetKey("ingest_lseg_data"),
         AssetKey("ingest_hawkeye_data"),
         AssetKey("ingest_ramp_data"),
         AssetKey("ingest_onetick_data"),
-    ],  # Depends on schema, metadata and ingestion assets completing first
+    ],  # Depends on metadata and ingestion assets completing first
     kinds=["pandas", "duckdb"],
     owners=["team:mqrm-data-eng"],
     tags={"m360-mqrm": ""},

@@ -33,10 +33,6 @@ ignore = [
   # (docstring imperative mood) Overly restrictive.
   "D401",
 
-  # (module level import not at top) There are several places where we use e.g.
-  # warnings.filterwarings calls before imports.
-  "E402",
-
   # (line too long): This fires for comments, which the ruff formatter won't auto-wrap. Disabling
   # until there is an autoformat solution available for comments.
   "E501",

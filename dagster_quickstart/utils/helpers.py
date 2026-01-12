@@ -1,6 +1,6 @@
 """Reusable helper functions for Dagster assets."""
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Dict, List, Optional
 
@@ -8,34 +8,24 @@ import pandas as pd
 from dagster import AssetExecutionContext, get_dagster_logger
 
 from dagster_quickstart.resources import DuckDBResource
+
+# Import SQL class and utility functions from local implementation
+from dagster_quickstart.resources.duckdb_datacacher import SQL, join_s3
 from dagster_quickstart.utils.constants import (
-    S3_BASE_PATH_STAGING,
-    S3_BASE_PATH_VALUE_DATA,
-    S3_PARQUET_FILE_NAME,
     SQL_FILE_PATH_PLACEHOLDER,
 )
-from dagster_quickstart.utils.datetime_utils import UTC, parse_datetime_string
+from dagster_quickstart.utils.datetime_utils import UTC
 from dagster_quickstart.utils.exceptions import (
     CSVValidationError,
-    DataSourceValidationError,
     DatabaseQueryError,
-    MetaSeriesNotFoundError,
 )
 from database.dependency import CalculationLogManager
-from database.meta_series import MetaSeriesManager
-from database.models import CalculationLogBase, CalculationStatus, DataSource
-
-# Try to import SQL class and utility functions from qr_common, but make them optional
-try:
-    from qr_common.datacachers.duckdb_datacacher import SQL, join_s3
-except ImportError:
-    SQL = None  # type: ignore
-    join_s3 = None  # type: ignore
+from database.models import CalculationLogBase, CalculationStatus
 
 logger = get_dagster_logger()
 
 
-def round_six_dp(value: float | Decimal) -> Decimal:
+def round_to_six_decimal_places(value: float | Decimal) -> Decimal:
     """Round a number to exactly 6 decimal places.
 
     Args:
@@ -45,119 +35,6 @@ def round_six_dp(value: float | Decimal) -> Decimal:
         Decimal value rounded to exactly 6 decimal places using ROUND_HALF_UP
     """
     return Decimal(value).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
-
-
-def safe_int(value: Any, field_name: str, required: bool = True) -> Optional[int]:
-    """Safely convert value to int, handling None and empty strings.
-
-    Args:
-        value: Value to convert to int
-        field_name: Name of the field (for error messages)
-        required: Whether the field is required
-
-    Returns:
-        Integer value or None if not required and value is empty
-
-    Raises:
-        ValueError: If value is required but missing or invalid
-    """
-    if value is None or (isinstance(value, str) and value.strip() == ""):
-        if required:
-            raise ValueError(f"Required field '{field_name}' is missing or empty")
-        return None
-    try:
-        return int(value)
-    except (ValueError, TypeError) as e:
-        raise ValueError(f"Invalid value for '{field_name}': {value}. Must be an integer.") from e
-
-
-def parse_data_source(data_source_str: str) -> DataSource:
-    """Parse and validate data source string.
-
-    Args:
-        data_source_str: String representation of data source
-
-    Returns:
-        DataSource enum value
-
-    Raises:
-        DataSourceValidationError: If data source is invalid
-    """
-    if not data_source_str or data_source_str.upper() == "NAN":
-        raise DataSourceValidationError("data_source is required and cannot be empty")
-
-    try:
-        return DataSource[data_source_str.upper()]
-    except KeyError:
-        valid_sources = [ds.value for ds in DataSource]
-        raise DataSourceValidationError(
-            f"Invalid data_source '{data_source_str}'. Must be one of: {valid_sources}"
-        )
-
-
-def validate_csv_columns(df: pd.DataFrame, required_columns: List[str], csv_path: str) -> None:
-    """Validate that CSV contains required columns.
-
-    Args:
-        df: Pandas DataFrame
-        required_columns: List of required column names
-        csv_path: Path to CSV file (for error messages)
-
-    Raises:
-        CSVValidationError: If required columns are missing
-    """
-    missing_columns = [col for col in required_columns if col not in df.columns]
-    if missing_columns:
-        raise CSVValidationError(f"CSV file {csv_path} missing required columns: {missing_columns}")
-
-
-def read_csv_safe(
-    csv_path: str,
-    null_values: Optional[str] = None,
-    truncate_ragged_lines: bool = True,
-) -> pd.DataFrame:
-    r"""Safely read CSV file with error handling.
-
-    Args:
-        csv_path: Path to CSV file
-        null_values: String representation of NULL values (default: "\\N")
-        truncate_ragged_lines: Whether to truncate ragged lines (pandas handles this automatically)
-
-    Returns:
-        Pandas DataFrame
-
-    Raises:
-        CSVValidationError: If CSV cannot be read
-    """
-    try:
-        read_options: Dict[str, Any] = {}
-        if null_values is not None:
-            read_options["na_values"] = [null_values]
-        # pandas handles ragged lines automatically, so truncate_ragged_lines is ignored
-        return pd.read_csv(csv_path, **read_options)
-    except Exception as e:
-        raise CSVValidationError(f"Error reading CSV file {csv_path}: {e}") from e
-
-
-def generate_date_range(start_date: str, end_date: str) -> List[datetime]:
-    """Generate list of dates between start and end date (inclusive).
-
-    Args:
-        start_date: Start date string in ISO format (YYYY-MM-DD)
-        end_date: End date string in ISO format (YYYY-MM-DD)
-
-    Returns:
-        List of datetime objects
-    """
-    # Parse dates using robust dateutil parser and normalize to UTC
-    start = parse_datetime_string(start_date).replace(hour=0, minute=0, second=0, microsecond=0)
-    end = parse_datetime_string(end_date).replace(hour=0, minute=0, second=0, microsecond=0)
-    dates = []
-    current = start
-    while current <= end:
-        dates.append(current)
-        current += timedelta(days=1)
-    return dates
 
 
 def load_series_data_from_duckdb(duckdb: DuckDBResource, series_id: int) -> Optional[pd.DataFrame]:
@@ -211,74 +88,6 @@ def load_series_data_from_duckdb(duckdb: DuckDBResource, series_id: int) -> Opti
         # File doesn't exist, return None
         pass
     return None
-
-
-def check_series_data_staleness(
-    duckdb: DuckDBResource,
-    series_id: int,
-    lookback_delta_seconds: int = 3600,
-) -> bool:
-    """Check if series data in S3 Parquet file is stale.
-
-    Uses DuckDBResource's staleness_check() method to check if the data
-    needs to be refreshed. Note: This works best with in-memory tables,
-    but can also check S3 file metadata if available.
-
-    Args:
-        duckdb: DuckDB resource with S3 access via httpfs
-        series_id: Series ID to check
-        lookback_delta_seconds: Maximum age in seconds before considered stale (default: 1 hour)
-
-    Returns:
-        True if stale, False if fresh or unknown
-    """
-    # Get relative S3 path for this series
-    relative_path = f"value-data/series_id={series_id}/data.parquet"
-
-    try:
-        # Use DuckDBResource's staleness_check() method
-        # Note: This works best with in-memory tables, but can check file metadata
-        is_stale = duckdb.staleness_check(
-            file_name=relative_path,
-            lookback_delta_seconds=lookback_delta_seconds,
-            in_memory=False,  # Set to True if using in-memory tables
-        )
-        return is_stale
-    except Exception as e:
-        logger.warning(f"Could not check staleness for series_id={series_id}: {e}")
-        return False  # If we can't check, assume not stale
-
-
-def get_or_validate_meta_series(
-    meta_manager: MetaSeriesManager,
-    series_code: str,
-    context: Optional[AssetExecutionContext] = None,
-    raise_if_not_found: bool = True,
-) -> Optional[Dict[str, Any]]:
-    """Get meta series by code, with optional validation and logging.
-
-    Args:
-        meta_manager: MetaSeriesManager instance
-        series_code: Series code to look up
-        context: Optional Dagster context for logging
-        raise_if_not_found: Whether to raise exception if not found
-
-    Returns:
-        Meta series dictionary or None if not found and raise_if_not_found=False
-
-    Raises:
-        MetaSeriesNotFoundError: If series not found and raise_if_not_found=True
-    """
-    meta_series = meta_manager.get_meta_series_by_code(series_code)
-
-    if not meta_series:
-        if raise_if_not_found:
-            raise MetaSeriesNotFoundError(f"Meta series {series_code} must exist before operation")
-        if context:
-            context.log.warning(f"Meta series {series_code} not found")
-        return None
-
-    return meta_series
 
 
 def create_calculation_log(
@@ -353,79 +162,6 @@ def update_calculation_log_on_error(
     )
 
 
-def is_empty_row(row: Dict[str, Any], required_fields: List[str]) -> bool:
-    """Check if a row is empty based on required fields.
-
-    Args:
-        row: Dictionary representing a row
-        required_fields: List of field names that must be non-empty
-
-    Returns:
-        True if row is empty (any required field is missing or empty)
-    """
-    for field in required_fields:
-        value = row.get(field)
-        if not value or (isinstance(value, str) and not value.strip()):
-            return True
-    return False
-
-
-def resolve_lookup_id_from_string(
-    row: Dict[str, Any],
-    id_field: str,
-    string_field: str,
-    lookup_manager: Any,
-    lookup_method: str,
-    context: Optional[AssetExecutionContext] = None,
-) -> Optional[int]:
-    """Resolve lookup ID from either direct ID field or string lookup.
-
-    Args:
-        row: Row dictionary
-        id_field: Name of the ID field (e.g., "region_id")
-        string_field: Name of the string field (e.g., "region")
-        lookup_manager: Lookup table manager instance
-        lookup_method: Method name to call on lookup_manager (e.g., "get_region_by_name")
-        context: Optional Dagster context for logging
-
-    Returns:
-        Resolved lookup ID or None if not found
-    """
-    # Try to get ID directly
-    lookup_id = safe_int(row.get(id_field), id_field, required=False)
-    if lookup_id:
-        return lookup_id
-
-    # Try to resolve from string field
-    string_value = row.get(string_field)
-    if not string_value:
-        return None
-
-    try:
-        lookup_method_func = getattr(lookup_manager, lookup_method)
-        lookup_result = lookup_method_func(str(string_value))
-        if lookup_result:
-            resolved_id = lookup_result.get(id_field)
-            if context:
-                context.log.debug(
-                    f"Resolved {string_field} '{string_value}' to {id_field}={resolved_id}"
-                )
-            return resolved_id
-        else:
-            if context:
-                context.log.warning(
-                    f"{string_field.capitalize()} '{string_value}' not found in lookup table"
-                )
-    except AttributeError as e:
-        if context:
-            context.log.error(f"Lookup method {lookup_method} not found: {e}")
-    except Exception as e:
-        if context:
-            context.log.warning(f"Error resolving {string_field} '{string_value}': {e}")
-
-    return None
-
-
 def create_sql_query_with_file_path(query_template: str, file_path: str, **kwargs: Any) -> Any:
     """Create SQL query object with file_path binding.
 
@@ -446,34 +182,55 @@ def create_sql_query_with_file_path(query_template: str, file_path: str, **kwarg
     return query_template.replace(SQL_FILE_PATH_PLACEHOLDER, file_path)
 
 
-def build_s3_path_for_series(series_id: int) -> str:
-    """Build relative S3 path for a series' Parquet file.
+def build_s3_control_table_path(
+    control_type: str, version_date: str, filename: str = "data.parquet"
+) -> str:
+    """Build relative S3 path for versioned control table Parquet file.
+
+    Control tables are the system of record for lookup tables and metadata_series.
+    They are versioned by run date (YYYY-MM-DD) and are immutable.
+
+    Note: Uses 'version-' prefix instead of 'version=' to avoid URL encoding issues
+    with DuckDB's httpfs extension, which URL-encodes '=' characters when converting
+    S3 URIs to HTTPS URLs.
 
     Args:
-        series_id: Series ID
+        control_type: Type of control table ('lookup', 'metadata_series', 'field_map')
+        version_date: Version date in YYYY-MM-DD format
+        filename: Parquet filename (default: 'data.parquet')
 
     Returns:
-        Relative S3 path (e.g., 'value-data/series_id=123/data.parquet')
+        Relative S3 path (e.g., 'control/lookup/version-2026-01-12/data.parquet')
     """
-    return f"{S3_BASE_PATH_VALUE_DATA}/series_id={series_id}/{S3_PARQUET_FILE_NAME}"
+    from dagster_quickstart.utils.constants import S3_BASE_PATH_CONTROL
+
+    # Use 'version-' instead of 'version=' to avoid URL encoding issues with DuckDB httpfs
+    return f"{S3_BASE_PATH_CONTROL}/{control_type}/version-{version_date}/{filename}"
 
 
-def build_s3_staging_path(staging_type: str, timestamp: int, unique_id: str) -> str:
-    """Build relative S3 path for staging Parquet file.
+def get_version_date() -> str:
+    """Get version date (YYYY-MM-DD) from Dagster context or current date.
+
+    Uses the run date from context if available, otherwise uses current UTC date.
+    This ensures versioning is consistent across pipeline runs.
 
     Args:
-        staging_type: Type of staging data (e.g., 'lookup_tables', 'meta_series')
-        timestamp: Timestamp for unique path generation
-        unique_id: Unique identifier for path generation
+        context: Optional Dagster execution context
 
     Returns:
-        Relative S3 path (e.g., 'staging/lookup_tables/1234567890-abc123.parquet')
+        Version date string in YYYY-MM-DD format
     """
-    return f"{S3_BASE_PATH_STAGING}/{staging_type}/{timestamp}-{unique_id}.parquet"
+    from dagster_quickstart.utils.datetime_utils import utc_now
+
+    # Fallback to current UTC date
+    return utc_now().strftime("%Y-%m-%d")
 
 
 def build_full_s3_path(bucket: str, relative_path: str) -> str:
-    """Build full S3 path from bucket and relative path.
+    """Build full S3 URI from bucket and relative path.
+
+    Returns S3 URI format (s3://bucket/path) for DuckDB's httpfs extension.
+    DuckDB's httpfs handles S3 URIs directly without URL encoding.
 
     Note: This is only needed for raw SQL strings. When using SQL objects with
     $file_path bindings, duckdb_datacacher automatically uses join_s3 internally
@@ -481,104 +238,237 @@ def build_full_s3_path(bucket: str, relative_path: str) -> str:
 
     Args:
         bucket: S3 bucket name
-        relative_path: Relative path within bucket
+        relative_path: Relative path within bucket (uses version- prefix to avoid URL encoding)
 
     Returns:
-        Full S3 path (e.g., 's3://bucket/path/to/file.parquet')
+        Full S3 URI (e.g., 's3://bucket/control/lookup/version-2026-01-12/data.parquet')
+        Note: Path is NOT URL-encoded - DuckDB's httpfs handles S3 URIs directly
     """
     if join_s3 is not None:
         return join_s3(bucket, relative_path)
     # Fallback: construct manually (only for raw SQL strings)
-    return f"s3://{bucket}/{relative_path.lstrip('/')}"
+    # Return S3 URI format - do NOT URL-encode
+    clean_path = relative_path.lstrip("/")
+    return f"s3://{bucket}/{clean_path}"
 
 
-def load_from_s3_parquet(
+def load_csv_to_temp_table(
     duckdb: DuckDBResource,
-    relative_path: str,
-    query_template: str,
+    csv_path: str,
+    null_value: str = "\\N",
     context: Optional[AssetExecutionContext] = None,
-) -> Optional[pd.DataFrame]:
-    """Load data from S3 Parquet file using DuckDBResource.
+) -> str:
+    r"""Load CSV file directly into DuckDB temp table using read_csv.
 
-    Uses DuckDBResource.load() which handles SQL validation and conversion.
-    Falls back to execute_query if SQL class is not available.
+    Generic helper function for loading CSV files into temporary tables.
 
     Args:
-        duckdb: DuckDB resource with S3 access
-        relative_path: Relative S3 path (relative to bucket)
-        query_template: SQL query template with $file_path placeholder
+        duckdb: DuckDB resource
+        csv_path: Path to CSV file
+        null_value: String representation of NULL values (default: "\\N")
         context: Optional Dagster context for logging
 
     Returns:
-        DataFrame with loaded data, or None if empty/not found
+        Temporary table name
 
     Raises:
-        DatabaseQueryError: If query execution fails
+        CSVValidationError: If CSV cannot be read
     """
+    import uuid
+
+    temp_table = f"_temp_csv_{uuid.uuid4().hex}"
+
     try:
-        # Create SQL query with file_path binding
-        query = create_sql_query_with_file_path(query_template, relative_path)
-        
-        # DuckDBResource.load() handles SQL validation and conversion internally
-        df = duckdb.load(query)
-        if df is not None and not df.empty:
-            return df
-    except ValueError:
-        # SQL class not available or validation failed, fallback to execute_query
-        bucket = duckdb.get_bucket()
-        full_s3_path = build_full_s3_path(bucket, relative_path)
-        resolved_query = query_template.replace(SQL_FILE_PATH_PLACEHOLDER, f"'{full_s3_path}'")
-        df = duckdb.execute_query(resolved_query)
-        if not df.empty:
-            return df
+        # Use DuckDB's read_csv function directly - no pandas involved
+        # DuckDB handles null values, type inference, and ragged lines automatically
+        create_table_sql = f"""
+            CREATE TEMP TABLE {temp_table} AS
+            SELECT * FROM read_csv('{csv_path}', 
+                nullstr='{null_value}',
+                header=true,
+                auto_detect=true,
+                ignore_errors=false
+            )
+        """
+        duckdb.execute_command(create_table_sql)
+        if context:
+            context.log.debug(f"Loaded CSV into temp table {temp_table}")
+        return temp_table
     except Exception as e:
-        error_msg = f"Failed to load data from S3 path {relative_path}: {e}"
+        error_msg = f"Error reading CSV file {csv_path}: {e}"
         if context:
             context.log.error(error_msg)
-        raise DatabaseQueryError(error_msg) from e
-
-    return None
+        raise CSVValidationError(error_msg) from e
 
 
-def save_to_s3_parquet(
+def write_to_s3_control_table(
     duckdb: DuckDBResource,
     relative_path: str,
-    select_query: Any,
+    select_query: str,
+    ordering_column: str,
     context: Optional[AssetExecutionContext] = None,
 ) -> bool:
-    """Save data to S3 Parquet file using DuckDBResource.
+    """Write data to S3 control table (versioned, immutable) using DuckDBResource.
 
-    Uses DuckDBResource.save() which handles SQL validation and conversion.
+    Generic helper function for writing validated data to S3 control tables.
 
     Args:
         duckdb: DuckDB resource with S3 access
         relative_path: Relative S3 path (relative to bucket)
-        select_query: SQL query object or string for selecting data to save
+        select_query: SQL SELECT query string for selecting data to save
+        ordering_column: Column name to use for ordering results
         context: Optional Dagster context for logging
 
     Returns:
-        True if save was successful
+        True if write was successful
 
     Raises:
-        DatabaseQueryError: If save operation fails
+        DatabaseQueryError: If write operation fails
     """
     try:
+        # Add ORDER BY clause if not already present
+        if "ORDER BY" not in select_query.upper():
+            select_query = f"{select_query} ORDER BY {ordering_column}"
+
         # DuckDBResource.save() handles SQL validation and conversion internally
         success = duckdb.save(
             select_statement=select_query,
             file_path=relative_path,
         )
         if not success:
-            raise DatabaseQueryError(f"Failed to save data to S3: {relative_path}")
+            raise DatabaseQueryError(f"Failed to write data to S3 control table: {relative_path}")
+        if context:
+            context.log.info(
+                "Successfully wrote data to S3 control table",
+                extra={"s3_path": relative_path},
+            )
         return True
     except ValueError as e:
         # Re-raise validation errors as DatabaseQueryError
-        error_msg = f"Invalid select_query for S3 save: {e}"
+        error_msg = f"Invalid select_query for S3 control table write: {e}"
         if context:
             context.log.error(error_msg)
         raise DatabaseQueryError(error_msg) from e
     except Exception as e:
-        error_msg = f"Failed to save data to S3 path {relative_path}: {e}"
+        error_msg = f"Failed to write data to S3 control table {relative_path}: {e}"
         if context:
             context.log.error(error_msg)
         raise DatabaseQueryError(error_msg) from e
+
+
+def create_or_update_duckdb_view(
+    duckdb: DuckDBResource,
+    view_name: str,
+    view_sql: str,
+    context: Optional[AssetExecutionContext] = None,
+) -> None:
+    """Create or update a DuckDB view with the given SQL.
+
+    Generic helper function for creating/updating DuckDB views over S3 control tables.
+
+    Args:
+        duckdb: DuckDB resource with S3 access
+        view_name: Name of the view to create/update
+        view_sql: Complete CREATE OR REPLACE VIEW SQL statement
+        context: Optional Dagster context for logging
+
+    Raises:
+        DatabaseQueryError: If view creation fails
+    """
+    try:
+        duckdb.execute_command(view_sql)
+        if context:
+            context.log.info(f"Created/updated view {view_name}")
+    except Exception as e:
+        error_msg = f"Error creating/updating view {view_name}: {e}"
+        if context:
+            context.log.error(error_msg)
+        raise DatabaseQueryError(error_msg) from e
+
+
+def validate_referential_integrity_sql(
+    duckdb: DuckDBResource,
+    temp_table: str,
+    validation_query: str,
+    context: Optional[AssetExecutionContext] = None,
+) -> None:
+    """Validate referential integrity using SQL query.
+
+    Generic helper function for SQL-based referential integrity validation.
+    Executes a validation query that should return empty results if validation passes.
+
+    Args:
+        duckdb: DuckDB resource with S3 access
+        temp_table: Temporary table name with data to validate
+        validation_query: SQL query that returns invalid rows (empty = valid)
+        context: Optional Dagster context for logging
+
+    Raises:
+        ReferentialIntegrityError: If validation fails
+    """
+    from dagster_quickstart.utils.exceptions import ReferentialIntegrityError
+
+    if context:
+        context.log.info("Validating referential integrity using SQL")
+
+    try:
+        invalid_result = duckdb.execute_query(validation_query)
+        if invalid_result is not None and not invalid_result.empty:
+            error_rows = invalid_result.to_dict("records")
+            error_msg = _format_validation_error_message(error_rows)
+            if context:
+                context.log.error(error_msg)
+            raise ReferentialIntegrityError(error_msg)
+    except ReferentialIntegrityError:
+        raise
+    except Exception as e:
+        error_msg = f"Error during referential integrity validation: {e}"
+        if context:
+            context.log.error(error_msg)
+        raise ReferentialIntegrityError(error_msg) from e
+
+    if context:
+        context.log.info("Referential integrity validation passed")
+
+
+def _format_validation_error_message(error_rows: List[Dict[str, Any]]) -> str:
+    """Format error message for referential integrity validation failures.
+
+    Args:
+        error_rows: List of dictionaries representing invalid rows
+
+    Returns:
+        Formatted error message string
+    """
+    error_msg = (
+        f"Referential integrity validation failed: {len(error_rows)} rows "
+        f"have invalid references. First few errors:\n"
+    )
+    for row in error_rows[:10]:
+        error_msg += f"  - {row}\n"
+    if len(error_rows) > 10:
+        error_msg += f"  ... and {len(error_rows) - 10} more errors\n"
+    return error_msg
+
+
+def unregister_temp_table(
+    duckdb: DuckDBResource,
+    temp_table: str,
+    context: Optional[AssetExecutionContext] = None,
+) -> None:
+    """Drop temporary table from DuckDB.
+
+    Generic helper function for cleaning up temporary tables.
+
+    Args:
+        duckdb: DuckDB resource
+        temp_table: Temporary table name to drop
+        context: Optional Dagster context for logging
+    """
+    try:
+        duckdb.execute_command(f"DROP TABLE IF EXISTS {temp_table}")
+        if context:
+            context.log.debug(f"Dropped temp table {temp_table}")
+    except Exception:
+        # Table may already be dropped, ignore
+        pass

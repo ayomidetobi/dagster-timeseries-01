@@ -1,4 +1,4 @@
-"""Configuration for CSV-based loading."""
+"""Configuration for loading lookup tables from CSV."""
 
 from dagster import Config
 
@@ -15,9 +15,3 @@ class LookupTableCSVConfig(Config):
     lookup_table_type: str = (
         "all"  # Type: "all" (load all types), or specific lookup type from LOOKUP_TABLE_COLUMNS
     )
-
-
-class MetaSeriesCSVConfig(Config):
-    """Configuration for loading meta series from CSV."""
-
-    csv_path: str = DEFAULT_CSV_PATHS["meta_series"]  # Path to CSV file with meta series data

@@ -4,13 +4,7 @@ from datetime import datetime
 from typing import Any, Dict, List
 
 from dagster import ConfigurableResource, get_dagster_logger
-from decouple import config
 
-from dagster_quickstart.utils.constants import (
-    PYPDL_DEFAULT_HOST,
-    PYPDL_DEFAULT_PORT,
-    PYPDL_DEFAULT_USERNAME,
-)
 from dagster_quickstart.utils.datetime_utils import parse_timestamp
 from dagster_quickstart.utils.exceptions import PyPDLError, PyPDLExecutionError
 

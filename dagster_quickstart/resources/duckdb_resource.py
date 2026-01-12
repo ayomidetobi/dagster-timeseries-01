@@ -1,30 +1,26 @@
 """DuckDB database resource for Dagster.
 
 This resource provides DuckDB database operations with S3 as the datalake.
-Uses duckdb_datacacher for connection management and duckup for migrations.
+Uses local DuckDBDataCacher for connection management.
 """
 
 import uuid
 from contextlib import contextmanager
-from pathlib import Path
 from typing import Any, Iterator, Optional
 
 import duckdb
-import duckup
 import pandas as pd
-from dagster import ConfigurableResource, get_dagster_logger
-from qr_common.datacachers.duckdb_datacacher import duckdb_datacacher
+from dagster import (
+    ConfigurableResource,
+    InitResourceContext,
+    ResourceDependency,
+    get_dagster_logger,
+)
 
-# Try to import SQL class from qr_common
-try:
-    from qr_common.datacachers.duckdb_datacacher import SQL
-except ImportError:
-    # SQL class might be in a different location, try alternative import
-    try:
-        from qr_common import SQL
-    except ImportError:
-        # If SQL is not available, we'll handle it in the methods
-        SQL = None
+from dagster_quickstart.resources.duckdb_datacacher import (
+    SQL,
+    DuckDBDataCacher,
+)
 
 logger = get_dagster_logger()
 
@@ -32,21 +28,20 @@ logger = get_dagster_logger()
 class DuckDBResource(ConfigurableResource):
     """Resource for interacting with a DuckDB database with S3 as the datalake.
 
-    Uses duckdb_datacacher for connection management and duckup for migrations.
+    Uses duckdb_datacacher for connection management.
     Provides methods for querying, inserting data, and managing S3 Parquet files.
+    Views are created dynamically over S3 control tables as needed.
+
+
     """
 
-    def __init__(self, cacher: duckdb_datacacher):
-        """Initialize DuckDB resource with datacacher.
+    cacher: ResourceDependency[DuckDBDataCacher]
 
-        Args:
-            cacher: DuckDB datacacher instance providing connection and S3 access
-        """
-        self._cacher = cacher
-        self._con = cacher.con
+    def setup_for_execution(self, context: InitResourceContext) -> None:
+        self._con = self.cacher.con
 
     @contextmanager
-    def get_connection(self) -> Iterator[duckdb.Connection]:
+    def get_connection(self) -> Iterator[duckdb.DuckDBPyConnection]:
         """Get the DuckDB connection.
 
         Returns:
@@ -125,67 +120,6 @@ class DuckDBResource(ConfigurableResource):
         self._con.execute(f"INSERT INTO {table} SELECT * FROM {tmp}")
         self.unregister_dataframe(tmp)
 
-    def ensure_database(self) -> None:
-        """Ensure the database exists.
-
-        For DuckDB with duckdb_datacacher, the database is already connected.
-        This method is a no-op but exists for interface compatibility.
-        """
-        logger.info("DuckDB database connection ensured via duckdb_datacacher")
-
-    def get_migrations_directory(self) -> Path:
-        """Get the migrations directory path.
-
-        Returns:
-            Path to migrations directory
-        """
-        # Get project root (two levels up from this file: resources -> dagster_quickstart -> project root)
-        current_file = Path(__file__)
-        project_root = current_file.parent.parent.parent
-        migrations_dir = project_root / "migrations_duckdb"
-        migrations_dir.mkdir(exist_ok=True)
-        return migrations_dir
-
-    def run_migrations(self) -> None:
-        """Run all pending migrations using duckup.
-
-        This method uses the duckup Python API to apply migrations.
-        Migrations are tracked and only pending ones are applied.
-        """
-        try:
-            migrations_dir = self.get_migrations_directory()
-
-            if not migrations_dir.exists():
-                logger.warning(f"Migrations directory {migrations_dir} does not exist")
-                return
-
-            # Run duckup upgrade with connection and migrations directory
-            duckup.upgrade(self._con, str(migrations_dir))
-
-            logger.info("DuckDB migrations applied successfully using duckup")
-
-        except ImportError:
-            logger.error("duckup library not found. " "Install it with: pip install duckup")
-            raise
-        except duckup.MigrationError as e:
-            logger.error(f"Migration error: {e}")
-            raise
-        except Exception as e:
-            logger.error(f"Unexpected error during migration: {e}")
-            raise
-
-    def setup_schema(self) -> None:
-        """Set up database schema using migrations.
-
-        This is a legacy method that now uses migrations instead of direct SQL.
-        It ensures the database exists and runs all pending migrations.
-        """
-        logger.warning(
-            "setup_schema() is deprecated. Use ensure_database() and run_migrations() instead."
-        )
-        self.ensure_database()
-        self.run_migrations()
-
     def _validate_and_convert_sql(self, select_statement: Any) -> Any:
         """Validate and convert select_statement to SQL object if needed.
 
@@ -248,7 +182,7 @@ class DuckDBResource(ConfigurableResource):
         """
         select_statement = self._validate_and_convert_sql(select_statement)
 
-        return self._cacher.save(
+        return self.cacher.save(
             select_statement=select_statement,
             file_path=file_path,
             debug=debug,
@@ -276,7 +210,7 @@ class DuckDBResource(ConfigurableResource):
         """
         select_statement = self._validate_and_convert_sql(select_statement)
 
-        return self._cacher.load(select_statement=select_statement, debug=debug)
+        return self.cacher.load(select_statement=select_statement, debug=debug)
 
     def staleness_check(
         self,
@@ -300,7 +234,7 @@ class DuckDBResource(ConfigurableResource):
         Note:
             This functionality is best suited for in-memory tables in DuckDB.
         """
-        return self._cacher.staleness_check(
+        return self.cacher.staleness_check(
             file_name=file_name,
             lookback_delta_seconds=lookback_delta_seconds,
             in_memory=in_memory,
@@ -315,37 +249,9 @@ class DuckDBResource(ConfigurableResource):
         Raises:
             AttributeError: If bucket is not available in the cacher
         """
-        if not hasattr(self._cacher, "bucket"):
+        if not hasattr(self.cacher, "bucket"):
             raise AttributeError("Bucket not available in duckdb_datacacher")
-        return self._cacher.bucket
-
-    def sql_to_string(self, s: Any) -> str:
-        """Replace SQL placeholders with bound values.
-
-        Converts a SQL object with placeholders to a resolved SQL string.
-        Handles S3 path resolution, DataFrame registration, and parameter substitution.
-
-        Example:
-            sql_obj = SQL("select * from $file_path", file_path="data.parquet")
-            resolved = resource.sql_to_string(sql_obj)
-            # Returns: select * from s3://BUCKET/data.parquet
-
-        Args:
-            s: SQL object with query and bindings
-
-        Returns:
-            Resolved SQL string with all placeholders replaced
-
-        Raises:
-            ValueError: If s is not a SQL object
-        """
-        if not hasattr(s, "sql") or not hasattr(s, "bindings"):
-            raise ValueError(
-                f"Expected SQL object with 'sql' and 'bindings' attributes; got {type(s)}"
-            )
-
-        # Expose the private method as a public method
-        return self._cacher._sql_to_string(s)  # type: ignore
+        return self.cacher.bucket
 
     def register_dataframe(self, name: str, df: pd.DataFrame) -> None:
         """Register a pandas DataFrame as a temporary table in DuckDB.

@@ -15,7 +15,6 @@ from dagster_quickstart.utils.constants import (
 from dagster_quickstart.utils.exceptions import CalculationError, MetaSeriesNotFoundError
 from dagster_quickstart.utils.helpers import (
     create_calculation_log,
-    get_or_validate_meta_series,
     load_series_data_from_duckdb,
     update_calculation_log_on_error,
     update_calculation_log_on_success,
@@ -53,8 +52,8 @@ def calculate_sma_series_logic(
     calc_manager = CalculationLogManager(duckdb)
 
     # Get derived series metadata
-    derived_series = get_or_validate_meta_series(
-        meta_manager, config.derived_series_code, context, raise_if_not_found=True
+    derived_series = meta_manager.get_or_validate_meta_series(
+        config.derived_series_code, context, raise_if_not_found=True
     )
 
     # get_or_validate_meta_series with raise_if_not_found=True should never return None
@@ -162,8 +161,8 @@ def calculate_weighted_composite_logic(
     calc_manager = CalculationLogManager(duckdb)
 
     # Get derived series
-    derived_series = get_or_validate_meta_series(
-        meta_manager, config.derived_series_code, context, raise_if_not_found=True
+    derived_series = meta_manager.get_or_validate_meta_series(
+        config.derived_series_code, context, raise_if_not_found=True
     )
 
     # get_or_validate_meta_series with raise_if_not_found=True should never return None

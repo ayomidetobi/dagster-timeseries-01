@@ -8,7 +8,7 @@ from dagster import AssetExecutionContext
 
 from dagster_quickstart.resources import DuckDBResource, PyPDLResource
 from dagster_quickstart.utils.datetime_utils import parse_timestamp, validate_timestamp
-from dagster_quickstart.utils.exceptions import DatabaseError, PyPDLError, MetaSeriesNotFoundError
+from dagster_quickstart.utils.exceptions import DatabaseError, MetaSeriesNotFoundError, PyPDLError
 from dagster_quickstart.utils.summary import AssetSummary
 from database.lookup_tables import LookupTableManager
 from database.meta_series import MetaSeriesManager

@@ -3,7 +3,7 @@
 Provides functions to get the DuckDB database resource.
 """
 
-from typing import Any, Optional, Type
+from typing import Any, Type
 
 from dagster_quickstart.resources import DuckDBResource
 

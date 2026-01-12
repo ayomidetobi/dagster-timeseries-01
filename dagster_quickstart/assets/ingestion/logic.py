@@ -9,7 +9,7 @@ from dagster import AssetExecutionContext
 
 from dagster_quickstart.resources import DuckDBResource
 from dagster_quickstart.utils.exceptions import DatabaseError
-from dagster_quickstart.utils.helpers import round_six_dp
+from dagster_quickstart.utils.helpers import round_to_six_decimal_places
 from dagster_quickstart.utils.summary import AssetSummary
 from database.lookup_tables import LookupTableManager
 from database.meta_series import MetaSeriesManager
@@ -119,7 +119,7 @@ def prepare_value_data_for_series(
     Returns:
         List of raw value data dictionaries
 
-    TODO:
+    Todo:
         Replace with actual API integration
     """
     # Generate random positive value between 1.0 and 1000.0
@@ -128,7 +128,9 @@ def prepare_value_data_for_series(
         {
             "series_id": series_id,
             "timestamp": target_date,
-            "value": round_six_dp(raw_value),  # Round to 6 decimal places for consistency
+            "value": round_to_six_decimal_places(
+                raw_value
+            ),  # Round to 6 decimal places for consistency
         }
     ]
     return raw_value_data

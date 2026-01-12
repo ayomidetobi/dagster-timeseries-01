@@ -3,55 +3,60 @@
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from dagster_quickstart.resources import ClickHouseResource
 from dagster_quickstart.utils.datetime_utils import utc_now_metadata
 from database.models import (
     CalculationLogBase,
     CalculationStatus,
     SeriesDependencyBase,
 )
+from database.utils import DatabaseResource
 
 
 class DependencyManager:
     """Manager for dependency graph operations."""
 
-    def __init__(self, clickhouse: ClickHouseResource):
-        """Initialize with ClickHouse resource."""
-        self.clickhouse = clickhouse
+    def __init__(self, database: DatabaseResource):
+        """Initialize with database resource (ClickHouse or DuckDB).
+
+        Args:
+            database: Database resource instance (ClickHouseResource or DuckDBResource)
+        """
+        self.database = database
 
     def create_dependency(self, dependency: SeriesDependencyBase) -> int:
         """Create a new dependency relationship."""
         now = datetime.now()
 
         # Get next dependency_id
-        result = self.clickhouse.execute_query(
-            "SELECT max(dependency_id) FROM seriesDependencyGraph"
-        )
+        result = self.database.execute_query("SELECT max(dependency_id) FROM seriesDependencyGraph")
+        # Handle both ClickHouse and DuckDB result formats
         if hasattr(result, "result_rows") and result.result_rows and result.result_rows[0][0]:
             next_id = result.result_rows[0][0] + 1
+        elif hasattr(result, "iloc") and not result.empty:
+            max_id = result.iloc[0, 0]
+            next_id = (max_id + 1) if max_id is not None else 1
         else:
             next_id = 1
 
+        # Use DuckDB-compatible SQL syntax (DuckDBResource will handle parameter substitution)
         query = """
         INSERT INTO seriesDependencyGraph (
             dependency_id, parent_series_id, child_series_id, weight,
             formula, created_at, updated_at
-        ) VALUES (
-            {id:UInt64}, {parent:UInt32}, {child:UInt32}, {weight:Float64},
-            {formula:String}, {now:DateTime64(6)}, {now:DateTime64(6)}
-        )
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
         """
 
-        self.clickhouse.execute_command(
+        self.database.execute_command(
             query,
-            parameters={
-                "id": next_id,
-                "parent": dependency.parent_series_id,
-                "child": dependency.child_series_id,
-                "weight": dependency.weight or 1.0,
-                "formula": dependency.formula or "",
-                "now": now,
-            },
+            parameters=[
+                next_id,
+                dependency.parent_series_id,
+                dependency.child_series_id,
+                dependency.weight or 1.0,
+                dependency.formula or "",
+                now,
+                now,
+            ],
         )
 
         return next_id
@@ -60,26 +65,32 @@ class DependencyManager:
         """Get all parent dependencies for a child series."""
         query = """
         SELECT * FROM seriesDependencyGraph
-        WHERE child_series_id = {child:UInt32}
+        WHERE child_series_id = ?
         ORDER BY parent_series_id
         """
-        result = self.clickhouse.execute_query(query, parameters={"child": child_series_id})
+        result = self.database.execute_query(query, parameters=[child_series_id])
+        # Handle both ClickHouse and DuckDB result formats
         if hasattr(result, "column_names") and hasattr(result, "result_rows"):
             columns = result.column_names
             return [dict(zip(columns, row)) for row in result.result_rows]
+        elif hasattr(result, "columns") and hasattr(result, "to_dict"):
+            return result.to_dict("records")
         return []
 
     def get_child_dependencies(self, parent_series_id: int) -> List[Dict[str, Any]]:
         """Get all child dependencies for a parent series."""
         query = """
         SELECT * FROM seriesDependencyGraph
-        WHERE parent_series_id = {parent:UInt32}
+        WHERE parent_series_id = ?
         ORDER BY child_series_id
         """
-        result = self.clickhouse.execute_query(query, parameters={"parent": parent_series_id})
+        result = self.database.execute_query(query, parameters=[parent_series_id])
+        # Handle both ClickHouse and DuckDB result formats
         if hasattr(result, "column_names") and hasattr(result, "result_rows"):
             columns = result.column_names
             return [dict(zip(columns, row)) for row in result.result_rows]
+        elif hasattr(result, "columns") and hasattr(result, "to_dict"):
+            return result.to_dict("records")
         return []
 
     def get_dependency_tree(self, series_id: int, max_depth: int = 10) -> Dict[str, Any]:
@@ -121,43 +132,52 @@ class DependencyManager:
 class CalculationLogManager:
     """Manager for calculation log operations."""
 
-    def __init__(self, clickhouse: ClickHouseResource):
-        """Initialize with ClickHouse resource."""
-        self.clickhouse = clickhouse
+    def __init__(self, database: DatabaseResource):
+        """Initialize with database resource (ClickHouse or DuckDB).
+
+        Args:
+            database: Database resource instance (ClickHouseResource or DuckDBResource)
+        """
+        self.database = database
 
     def create_calculation_log(self, calculation: CalculationLogBase) -> int:
         """Create a new calculation log entry."""
         # Get next calculation_id
-        result = self.clickhouse.execute_query("SELECT max(calculation_id) FROM calculationLog")
+        result = self.database.execute_query("SELECT max(calculation_id) FROM calculationLog")
+        # Handle both ClickHouse and DuckDB result formats
         if hasattr(result, "result_rows") and result.result_rows and result.result_rows[0][0]:
             next_id = result.result_rows[0][0] + 1
+        elif hasattr(result, "iloc") and not result.empty:
+            max_id = result.iloc[0, 0]
+            next_id = (max_id + 1) if max_id is not None else 1
         else:
             next_id = 1
+
+        # Use DuckDB-compatible SQL syntax
+        # For arrays, DuckDB accepts Python lists directly
+        now = utc_now_metadata()
 
         query = """
         INSERT INTO calculationLog (
             calculation_id, series_id, calculation_type, status,
             input_series_ids, parameters, formula, rows_processed, error_message, created_at
-        ) VALUES (
-            {id:UInt64}, {series_id:UInt32}, {type:String}, {status:String},
-            {inputs:Array(UInt32)}, {params:String}, {formula:String}, {rows:UInt64}, {error:String}, {now:DateTime64(6)}
-        )
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
 
-        self.clickhouse.execute_command(
+        self.database.execute_command(
             query,
-            parameters={
-                "id": next_id,
-                "series_id": calculation.series_id,
-                "type": calculation.calculation_type,
-                "status": str(calculation.status.value),
-                "inputs": calculation.input_series_ids,
-                "params": calculation.parameters or "",
-                "formula": calculation.formula or "",
-                "rows": calculation.rows_processed or 0,
-                "error": calculation.error_message or "",
-                "now": utc_now_metadata(),
-            },
+            parameters=[
+                next_id,
+                calculation.series_id,
+                calculation.calculation_type,
+                str(calculation.status.value),
+                calculation.input_series_ids or [],  # DuckDB accepts Python lists as arrays
+                calculation.parameters or "",
+                calculation.formula or "",
+                calculation.rows_processed or 0,
+                calculation.error_message or "",
+                now,
+            ],
         )
 
         return next_id
@@ -172,27 +192,27 @@ class CalculationLogManager:
     ) -> None:
         """Update a calculation log entry."""
         # Build update query dynamically based on what's provided
-        updates = ["status = {status:String}"]
-        params = {
-            "id": calculation_id,
-            "status": str(status.value),
-        }
+        # Use DuckDB-compatible UPDATE syntax
+        updates = ["status = ?"]
+        params = [str(status.value)]
 
         if rows_processed is not None:
-            updates.append("rows_processed = {rows:UInt64}")
-            params["rows"] = rows_processed
+            updates.append("rows_processed = ?")
+            params.append(rows_processed)
 
         if error_message is not None:
-            updates.append("error_message = {error:String}")
-            params["error"] = error_message
+            updates.append("error_message = ?")
+            params.append(error_message)
 
+        # DuckDB uses standard UPDATE syntax, not ALTER TABLE UPDATE
         query = f"""
-        ALTER TABLE calculationLog
-        UPDATE {', '.join(updates)}
-        WHERE calculation_id = {{id:UInt64}}
+        UPDATE calculationLog
+        SET {', '.join(updates)}
+        WHERE calculation_id = ?
         """
+        params.append(calculation_id)
 
-        self.clickhouse.execute_command(query, parameters=params)
+        self.database.execute_command(query, parameters=params)
 
     def get_calculation_logs(
         self,
@@ -202,21 +222,24 @@ class CalculationLogManager:
     ) -> List[Dict[str, Any]]:
         """Get calculation logs with optional filters."""
         query = "SELECT * FROM calculationLog WHERE 1=1"
-        params = {}
+        params = []
 
         if series_id:
-            query += " AND series_id = {series_id:UInt32}"
-            params["series_id"] = series_id
+            query += " AND series_id = ?"
+            params.append(series_id)
 
         if status:
-            query += " AND status = {status:String}"
-            params["status"] = str(status.value)
+            query += " AND status = ?"
+            params.append(str(status.value))
 
-        query += " ORDER BY created_at DESC LIMIT {limit:UInt32}"
-        params["limit"] = limit
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
 
-        result = self.clickhouse.execute_query(query, parameters=params)
+        result = self.database.execute_query(query, parameters=params)
+        # Handle both ClickHouse and DuckDB result formats
         if hasattr(result, "column_names") and hasattr(result, "result_rows"):
             columns = result.column_names
             return [dict(zip(columns, row)) for row in result.result_rows]
+        elif hasattr(result, "columns") and hasattr(result, "to_dict"):
+            return result.to_dict("records")
         return []
