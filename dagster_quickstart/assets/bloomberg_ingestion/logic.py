@@ -1,20 +1,15 @@
 """Bloomberg data ingestion logic using pyeqdr.pypdl."""
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from dagster import AssetExecutionContext
 
 from dagster_quickstart.resources import DuckDBResource, PyPDLResource
-from dagster_quickstart.utils.exceptions import (
-    DatabaseError,
-    DatabaseQueryError,
-    S3ControlTableNotFoundError,
-)
+from dagster_quickstart.utils.exceptions import DatabaseError
 from dagster_quickstart.utils.helpers import (
     check_existing_value_data_in_s3,
     create_ingestion_result_dict,
-    get_version_date,
     process_time_series_data_points,
     save_value_data_to_s3,
 )
@@ -30,16 +25,18 @@ from dagster_quickstart.utils.validation_helpers import (
     validate_field_type_name,
     validate_series_metadata,
 )
-from database.lookup_tables import LookupTableManager
-from database.meta_series import MetaSeriesManager
 from database.referential_integrity import ReferentialIntegrityValidator
+
+if TYPE_CHECKING:
+    from database.lookup_tables import LookupTableManager
+    from database.meta_series import MetaSeriesManager
 
 from .config import BloombergIngestionConfig
 
 
 def validate_bloomberg_ticker_source(
     series: Dict[str, Any],
-    lookup_manager: LookupTableManager,
+    lookup_manager: "LookupTableManager",
     series_id: int,
     series_code: str,
     context: AssetExecutionContext,
@@ -144,6 +141,8 @@ def ingest_bloomberg_data_for_series(
     duckdb: DuckDBResource,
     series_code: str,
     target_date: datetime,
+    meta_manager: "MetaSeriesManager",  # type: ignore[name-defined]
+    lookup_manager: "LookupTableManager",  # type: ignore[name-defined]
 ) -> Optional[Dict[str, Any]]:
     """Internal function for Bloomberg data ingestion using PyPDL for a single series and date.
 
@@ -157,39 +156,12 @@ def ingest_bloomberg_data_for_series(
         duckdb: DuckDB resource
         series_code: Series code to ingest (from partition key)
         target_date: Target date for data ingestion (from partition key)
+        meta_manager: MetaSeriesManager instance (initialized in asset)
+        lookup_manager: LookupTableManager instance (initialized in asset)
 
     Returns:
         Result dictionary with ingestion results, or None if skipped/failed
     """
-    # Initialize managers
-    meta_manager = MetaSeriesManager(duckdb)
-    lookup_manager = LookupTableManager(duckdb)
-
-    # Ensure the metaSeries view exists before querying
-    version_date = get_version_date()
-    try:
-        meta_manager.create_or_update_view(duckdb, version_date, context=context)
-    except DatabaseQueryError:
-        # Handle missing S3 control table
-        s3_error = S3ControlTableNotFoundError(control_type="metaSeries", version_date=version_date)
-        context.log.error(
-            f"{s3_error.control_type} S3 control table not found for version {s3_error.version_date} - CSV must be loaded first"
-        )
-        return handle_ingestion_failure(series_code, target_date, context, str(s3_error))
-
-    # Ensure the lookup table views exist before querying
-    try:
-        lookup_manager.create_or_update_views(duckdb, version_date, context=context)
-    except DatabaseQueryError:
-        # Handle missing S3 control table
-        s3_error = S3ControlTableNotFoundError(
-            control_type="lookup_tables", version_date=version_date
-        )
-        context.log.error(
-            f"{s3_error.control_type} S3 control table not found for version {s3_error.version_date} - CSV must be loaded first"
-        )
-        return handle_ingestion_failure(series_code, target_date, context, str(s3_error))
-
     # Get and validate series exists by code
     series = meta_manager.get_meta_series_by_code(series_code)
     if not series:

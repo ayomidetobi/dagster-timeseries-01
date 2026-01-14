@@ -19,13 +19,14 @@ from dagster_quickstart.utils.constants import (
     S3_CONTROL_LOOKUP,
     S3_PARQUET_FILE_NAME,
 )
-from dagster_quickstart.utils.exceptions import CSVValidationError
+from dagster_quickstart.utils.exceptions import CSVValidationError, DatabaseQueryError
 from dagster_quickstart.utils.helpers import (
     build_full_s3_path,
     build_s3_control_table_path,
     get_version_date,
 )
 from dagster_quickstart.utils.summary.csv_loader import add_csv_loader_summary_metadata
+from database.lookup_tables import LookupTableManager
 
 from .config import LookupTableCSVConfig
 from .logic import process_csv_to_s3_control_table_lookup_tables
@@ -76,7 +77,22 @@ def load_lookup_tables_from_csv(
     context.log.info(
         "Using CSV → S3 control table flow (versioned, immutable control-plane tables)"
     )
-    all_results = process_csv_to_s3_control_table_lookup_tables(context, duckdb, config.csv_path)
+
+    # Get version date for this run
+    version_date = get_version_date()
+
+    # Ensure views exist before calling logic (for validation/reading existing data)
+    lookup_manager = LookupTableManager(duckdb)
+    try:
+        lookup_manager.create_or_update_views(duckdb, version_date, context=context)
+    except DatabaseQueryError:
+        # If views don't exist yet (first run), that's okay - logic will create the data
+        context.log.info("Lookup table views don't exist yet - will be created after data is saved")
+
+    # Process CSV and save to S3 (logic doesn't create views)
+    all_results = process_csv_to_s3_control_table_lookup_tables(
+        context, duckdb, config.csv_path, version_date, lookup_manager
+    )
 
     # Return results based on requested type
     if config.lookup_table_type != "all" and config.lookup_table_type in all_results:
@@ -90,11 +106,10 @@ def load_lookup_tables_from_csv(
         )
         # Get version date and S3 path for metadata
         version_date = get_version_date()
-        bucket = duckdb.get_bucket()
         relative_path = build_s3_control_table_path(
             S3_CONTROL_LOOKUP, version_date, S3_PARQUET_FILE_NAME
         )
-        s3_control_table_path = build_full_s3_path(bucket, relative_path)
+        s3_control_table_path = build_full_s3_path(duckdb, relative_path)
 
         # Add AssetSummary metadata
         add_csv_loader_summary_metadata(
@@ -118,11 +133,10 @@ def load_lookup_tables_from_csv(
         result_df = pd.DataFrame(rows)
         # Get version date and S3 path for metadata
         version_date = get_version_date()
-        bucket = duckdb.get_bucket()
         relative_path = build_s3_control_table_path(
             S3_CONTROL_LOOKUP, version_date, S3_PARQUET_FILE_NAME
         )
-        s3_control_table_path = build_full_s3_path(bucket, relative_path)
+        s3_control_table_path = build_full_s3_path(duckdb, relative_path)
 
         # Add AssetSummary metadata
         add_csv_loader_summary_metadata(

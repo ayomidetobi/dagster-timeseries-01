@@ -14,10 +14,14 @@ from dagster_quickstart.utils.constants import (
     RETRY_POLICY_DELAY_INGESTION,
     RETRY_POLICY_MAX_RETRIES_INGESTION,
 )
+from dagster_quickstart.utils.exceptions import DatabaseQueryError, S3ControlTableNotFoundError
+from dagster_quickstart.utils.helpers import get_version_date
 from dagster_quickstart.utils.partitions import (
     BLOOMBERG_INGESTION_PARTITION,
     get_partition_date,
 )
+from database.lookup_tables import LookupTableManager
+from database.meta_series import MetaSeriesManager
 
 from .config import BloombergIngestionConfig
 from .logic import ingest_bloomberg_data_for_series
@@ -89,7 +93,41 @@ def ingest_bloomberg_data_pypdl(
         "Processing partition: series_code=%s, date=%s", series_code, target_date.date()
     )
 
+    # Ensure views exist before calling logic
+    version_date = get_version_date()
+    meta_manager = MetaSeriesManager(duckdb)
+    lookup_manager = LookupTableManager(duckdb)
+
+    # Ensure views exist before querying (metaSeries and lookup tables)
+    try:
+        meta_manager.create_or_update_view(duckdb, version_date, context=context)
+        lookup_manager.create_or_update_views(duckdb, version_date, context=context)
+    except DatabaseQueryError as e:
+        # Handle missing S3 control table
+        # Determine which control table failed based on error message
+        error_msg = str(e).lower()
+        if "metaseries" in error_msg or "meta_series" in error_msg:
+            control_type = "metaSeries"
+        elif "lookup" in error_msg:
+            control_type = "lookup_tables"
+        else:
+            # Default to metaSeries if we can't determine
+            control_type = "metaSeries"
+
+        s3_error = S3ControlTableNotFoundError(control_type=control_type, version_date=version_date)
+        context.log.error(
+            f"{s3_error.control_type} S3 control table not found for version {s3_error.version_date} - CSV must be loaded first"
+        )
+        return None
+
     ingest_bloomberg_data_for_series(
-        context, config, pypdl_resource, duckdb, series_code, target_date
+        context,
+        config,
+        pypdl_resource,
+        duckdb,
+        series_code,
+        target_date,
+        meta_manager,
+        lookup_manager,
     )
     return None

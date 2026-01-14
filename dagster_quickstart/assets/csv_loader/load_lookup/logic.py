@@ -9,7 +9,7 @@ Data flow:
 """
 
 import uuid
-from typing import Dict
+from typing import TYPE_CHECKING, Dict
 
 from dagster import AssetExecutionContext
 
@@ -26,7 +26,6 @@ from dagster_quickstart.utils.exceptions import (
     DatabaseQueryError,
 )
 from dagster_quickstart.utils.helpers import (
-    get_version_date,
     load_csv_to_temp_table,
     unregister_temp_table,
 )
@@ -35,7 +34,9 @@ from database.ddl import (
     EXTRACT_LOOKUP_SIMPLE,
     LOOKUP_RESULTS_QUERY,
 )
-from database.lookup_tables import LookupTableManager
+
+if TYPE_CHECKING:
+    from database.lookup_tables import LookupTableManager
 
 from ..utils.load_data import get_available_columns
 
@@ -164,6 +165,8 @@ def process_csv_to_s3_control_table_lookup_tables(
     context: AssetExecutionContext,
     duckdb: DuckDBResource,
     csv_path: str,
+    version_date: str,
+    lookup_manager: "LookupTableManager",
 ) -> Dict[str, Dict[str, int]]:
     """Process lookup tables from CSV to S3 control table (versioned, immutable).
 
@@ -174,6 +177,8 @@ def process_csv_to_s3_control_table_lookup_tables(
         context: Dagster execution context.
         duckdb: DuckDB resource with S3 access.
         csv_path: Path to CSV file.
+        version_date: Version date for this run.
+        lookup_manager: LookupTableManager instance (initialized in asset).
 
     Returns:
         Dictionary mapping lookup_type -> {name: row_index}.
@@ -183,9 +188,6 @@ def process_csv_to_s3_control_table_lookup_tables(
         CSVValidationError: If CSV cannot be read or has no valid columns.
     """
     context.log.info("Processing lookup tables from CSV to S3 control table (versioned)")
-
-    # Get version date for this run
-    version_date = get_version_date()
 
     # Load CSV directly into DuckDB temp table (no pandas)
     temp_table = load_csv_to_temp_table(duckdb, csv_path, NULL_VALUE_REPRESENTATION, context)
@@ -245,14 +247,12 @@ def process_csv_to_s3_control_table_lookup_tables(
 
         # Write all lookup tables to a single S3 control table file
         if all_lookup_temp_tables:
-            # Use LookupTableManager for CRUD operations
-            lookup_manager = LookupTableManager(duckdb)
+            # Use LookupTableManager for CRUD operations (passed from asset)
             lookup_manager.save_lookup_tables_to_s3(
                 duckdb, all_lookup_temp_tables, version_date, context
             )
 
-            # Create/update all lookup table views after writing all data
-            lookup_manager.create_or_update_views(duckdb, version_date, context)
+            # Note: View creation is handled in the asset function, not here
 
             # Clean up lookup temp tables
             for temp_lookup_table in all_lookup_temp_tables.values():

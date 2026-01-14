@@ -71,8 +71,7 @@ def load_series_data_from_duckdb(duckdb: DuckDBResource, series_id: int) -> Opti
                 return df
         else:
             # SQL class not available, use execute_query as fallback
-            bucket = duckdb.get_bucket()
-            full_s3_path = build_full_s3_path(bucket, relative_path)
+            full_s3_path = build_full_s3_path(duckdb, relative_path)
             query = f"""
             SELECT timestamp, value
             FROM read_parquet('{full_s3_path}')
@@ -226,8 +225,8 @@ def get_version_date() -> str:
     return utc_now().strftime("%Y-%m-%d")
 
 
-def build_full_s3_path(bucket: str, relative_path: str) -> str:
-    """Build full S3 URI from bucket and relative path.
+def build_full_s3_path(duckdb: "DuckDBResource", relative_path: str) -> str:  # type: ignore[name-defined]
+    """Build full S3 URI from DuckDB resource and relative path.
 
     Returns S3 URI format (s3://bucket/path) for DuckDB's httpfs extension.
     DuckDB's httpfs handles S3 URIs directly without URL encoding.
@@ -237,13 +236,14 @@ def build_full_s3_path(bucket: str, relative_path: str) -> str:
     via sql_to_string() and save() methods.
 
     Args:
-        bucket: S3 bucket name
+        duckdb: DuckDB resource to get bucket from
         relative_path: Relative path within bucket (uses version- prefix to avoid URL encoding)
 
     Returns:
         Full S3 URI (e.g., 's3://bucket/control/lookup/version-2026-01-12/data.parquet')
         Note: Path is NOT URL-encoded - DuckDB's httpfs handles S3 URIs directly
     """
+    bucket = duckdb.get_bucket()
     if join_s3 is not None:
         return join_s3(bucket, relative_path)
     # Fallback: construct manually (only for raw SQL strings)
@@ -528,8 +528,7 @@ def check_existing_value_data_in_s3(
         return False
 
     relative_path = build_s3_value_data_path(series_code, target_date)
-    bucket = duckdb.get_bucket()
-    full_s3_path = build_full_s3_path(bucket, relative_path)
+    full_s3_path = build_full_s3_path(duckdb, relative_path)
 
     try:
         # Try to read the file - if it exists and has data, skip
