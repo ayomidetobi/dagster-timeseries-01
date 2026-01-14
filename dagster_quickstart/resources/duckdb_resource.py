@@ -1,97 +1,47 @@
 """DuckDB database resource for Dagster.
 
-This resource provides DuckDB database operations with the same interface
-as ClickHouseResource, allowing easy switching between databases.
-Uses duckdb_datacacher for connection management and duckup for migrations.
+This resource provides DuckDB database operations with S3 as the datalake.
+Uses local DuckDBDataCacher for connection management.
 """
 
-import re
 import uuid
 from contextlib import contextmanager
-from pathlib import Path
 from typing import Any, Iterator, Optional
 
 import duckdb
-import duckup
 import pandas as pd
-import polars as pl
-from dagster import ConfigurableResource, get_dagster_logger
-from qr_common.datacachers.duckdb_datacacher import duckdb_datacacher
+from dagster import (
+    ConfigurableResource,
+    InitResourceContext,
+    ResourceDependency,
+    get_dagster_logger,
+)
+
+from dagster_quickstart.resources.duckdb_datacacher import (
+    SQL,
+    DuckDBDataCacher,
+)
 
 logger = get_dagster_logger()
 
 
-class DuckDBResult:
-    """Wrapper for DuckDB query results to match ClickHouse result interface."""
-
-    def __init__(self, result: Any):
-        """Initialize with DuckDB query result.
-
-        Args:
-            result: DuckDB query result (relation or fetchall result)
-        """
-        self._result = result
-
-        # Handle different result types
-        if hasattr(result, "df"):
-            # DuckDB relation with df() method
-            self._df = result.df()
-        elif hasattr(result, "fetchall"):
-            # Result from fetchall()
-            self._rows = result.fetchall()
-            self._columns = [c[0] for c in result.description]
-            self._df = None
-        else:
-            # Try to convert to list of tuples
-            try:
-                self._rows = list(result) if result else []
-                self._columns = []
-                self._df = None
-            except Exception:
-                self._rows = []
-                self._columns = []
-                self._df = None
-
-    @property
-    def result_rows(self) -> list:
-        """Get result rows as list of tuples."""
-        if self._df is not None:
-            return [tuple(row) for row in self._df.values.tolist()]
-        elif hasattr(self, "_rows"):
-            return self._rows
-        return []
-
-    @property
-    def column_names(self) -> list:
-        """Get column names."""
-        if self._df is not None:
-            return list(self._df.columns)
-        elif hasattr(self, "_columns") and self._columns:
-            return [col[0] for col in self._columns]
-        return []
-
-
 class DuckDBResource(ConfigurableResource):
-    """Resource for interacting with a DuckDB database.
+    """Resource for interacting with a DuckDB database with S3 as the datalake.
 
-    Uses duckdb_datacacher for connection management and duckup for migrations.
-    Implements the same interface as ClickHouseResource for easy switching.
+    Uses duckdb_datacacher for connection management.
+    Provides methods for querying, inserting data, and managing S3 Parquet files.
+    Views are created dynamically over S3 control tables as needed.
+
+
     """
 
-    def __init__(self, cacher: duckdb_datacacher):
-        """Initialize DuckDB resource with datacacher.
+    cacher: ResourceDependency[DuckDBDataCacher]
 
-        Loads the chsql extension for ClickHouse SQL compatibility.
-
-        Args:
-            cacher: DuckDB datacacher instance providing connection
-        """
-        self._cacher = cacher
-        self._con = cacher._con
-        self._ensure_chsql_loaded()
+    def setup_for_execution(self, context: InitResourceContext) -> None:
+        self._con = self.cacher.con
 
     @contextmanager
-    def get_connection(self) -> Iterator[duckdb.Connection]:
+    def get_connection(self) -> Iterator[duckdb.DuckDBPyConnection]:
         """Get the DuckDB connection.
 
         Returns:
@@ -99,45 +49,42 @@ class DuckDBResource(ConfigurableResource):
         """
         yield self._con
 
-    def execute_query(self, query: str, parameters: Optional[dict] = None) -> DuckDBResult:
-        """Execute a query and return results.
-
-        Accepts ClickHouse-style SQL. The chsql extension provides compatibility.
+    def execute_query(self, query: str, parameters: Optional[list] = None) -> pd.DataFrame:
+        """Execute a query and return results as pandas DataFrame.
 
         Args:
-            query: SQL query string (ClickHouse format)
-            parameters: Query parameters (ClickHouse-style dict, converted to DuckDB format)
+            query: SQL query string with ? placeholders for parameters
+            parameters: Optional list of parameter values in order
 
         Returns:
-            DuckDBResult object with result_rows and column_names
+            Pandas DataFrame with query results, or empty DataFrame if no results
         """
-        # Convert ClickHouse-style parameters to DuckDB format
-        duckdb_query, duckdb_params = self._convert_query_parameters(query, parameters)
-        duckdb_params = duckdb_params if duckdb_params is not None else []
-
-        if duckdb_params:
-            result = self._con.execute(duckdb_query, duckdb_params)
+        if parameters:
+            result = self._con.execute(query, parameters)
         else:
-            result = self._con.execute(duckdb_query)
+            result = self._con.execute(query)
 
-        return DuckDBResult(result)
+        # DuckDB's execute() returns a relation that has a df() method
+        if hasattr(result, "df"):
+            df = result.df()
+            return df if df is not None else pd.DataFrame()
+        # Fallback: try to convert to DataFrame
+        try:
+            return pd.DataFrame(result.fetchall())
+        except Exception:
+            return pd.DataFrame()
 
-    def execute_command(self, command: str, parameters: Optional[dict] = None) -> None:
+    def execute_command(self, command: str, parameters: Optional[list] = None) -> None:
         """Execute a command (DDL/DML) without returning results.
 
-        Accepts ClickHouse-style SQL. The chsql extension provides compatibility.
-
         Args:
-            command: SQL command string (ClickHouse format)
-            parameters: Command parameters (ClickHouse-style dict, converted to DuckDB format)
+            command: SQL command string with ? placeholders for parameters
+            parameters: Optional list of parameter values in order
         """
-        # Convert ClickHouse-style parameters to DuckDB format
-        duckdb_command, duckdb_params = self._convert_query_parameters(command, parameters)
-
-        if duckdb_params:
-            self._con.execute(duckdb_command, duckdb_params)
+        if parameters:
+            self._con.execute(command, parameters)
         else:
-            self._con.execute(duckdb_command)
+            self._con.execute(command)
 
     def insert_data(
         self,
@@ -148,23 +95,19 @@ class DuckDBResource(ConfigurableResource):
     ) -> None:
         """Insert data into a DuckDB table using bulk insert.
 
-        Uses DuckDB's register method for efficient bulk inserts with Pandas.
-        Accepts raw data (list of lists/tuples) or Polars DataFrames.
+        Uses DuckDB's register method for efficient bulk inserts with pandas.
 
         Args:
             table: Table name
-            data: List of rows (list of lists or list of tuples) or Polars DataFrame
-            column_names: Optional list of column names (ignored if data is already a DataFrame)
+            data: List of rows (list of lists or list of tuples)
+            column_names: Optional list of column names
             database: Optional database name (ignored for DuckDB)
         """
         if not data:
             return
 
-        # Handle Polars DataFrame - convert to Pandas
-        if isinstance(data, pl.DataFrame):
-            df = data.to_pandas()
-        # Convert raw data to Pandas DataFrame
-        elif column_names:
+        # Convert data to pandas DataFrame
+        if column_names:
             # Use provided column names
             df = pd.DataFrame(data, columns=column_names)
         else:
@@ -173,146 +116,164 @@ class DuckDBResource(ConfigurableResource):
 
         # Use DuckDB's register method for bulk insert with unique temp table name
         tmp = f"_tmp_insert_{uuid.uuid4().hex}"
-        self._con.register(tmp, df)
+        self.register_dataframe(tmp, df)
         self._con.execute(f"INSERT INTO {table} SELECT * FROM {tmp}")
-        self._con.unregister(tmp)
+        self.unregister_dataframe(tmp)
 
-    def ensure_database(self) -> None:
-        """Ensure the database exists.
-
-        For DuckDB with duckdb_datacacher, the database is already connected.
-        This method is a no-op but exists for interface compatibility.
-        """
-        logger.info("DuckDB database connection ensured via duckdb_datacacher")
-
-    def get_migrations_directory(self) -> Path:
-        """Get the migrations directory path.
-
-        Returns:
-            Path to migrations directory
-        """
-        # Get project root (two levels up from this file: resources -> dagster_quickstart -> project root)
-        current_file = Path(__file__)
-        project_root = current_file.parent.parent.parent
-        migrations_dir = project_root / "migrations_duckdb"
-        migrations_dir.mkdir(exist_ok=True)
-        return migrations_dir
-
-    def run_migrations(self) -> None:
-        """Run all pending migrations using duckup.
-
-        This method uses the duckup Python API to apply migrations.
-        Migrations are tracked and only pending ones are applied.
-        """
-        try:
-            migrations_dir = self.get_migrations_directory()
-
-            if not migrations_dir.exists():
-                logger.warning(f"Migrations directory {migrations_dir} does not exist")
-                return
-
-            # Run duckup upgrade with connection and migrations directory
-            duckup.upgrade(self._con, str(migrations_dir))
-
-            logger.info("DuckDB migrations applied successfully using duckup")
-
-        except ImportError:
-            logger.error("duckup library not found. " "Install it with: pip install duckup")
-            raise
-        except duckup.MigrationError as e:
-            logger.error(f"Migration error: {e}")
-            raise
-        except Exception as e:
-            logger.error(f"Unexpected error during migration: {e}")
-            raise
-
-    def setup_schema(self) -> None:
-        """Set up database schema using migrations.
-
-        This is a legacy method that now uses migrations instead of direct SQL.
-        It ensures the database exists and runs all pending migrations.
-        """
-        logger.warning(
-            "setup_schema() is deprecated. Use ensure_database() and run_migrations() instead."
-        )
-        self.ensure_database()
-        self.run_migrations()
-
-    def _ensure_chsql_loaded(self) -> None:
-        """Ensure the chsql extension is installed and loaded.
-
-        The chsql extension provides ClickHouse SQL compatibility for DuckDB,
-        including ClickHouse functions and syntax support.
-        """
-        try:
-            # Try to install chsql if not already installed
-            try:
-                self._con.execute("INSTALL chsql FROM community")
-                logger.info("Installed chsql extension")
-            except Exception:
-                # Extension might already be installed, continue
-                pass
-
-            # Load the chsql extension
-            self._con.execute("LOAD chsql")
-            logger.info("Loaded chsql extension for ClickHouse SQL compatibility")
-        except Exception as e:
-            logger.warning(
-                f"Could not load chsql extension: {e}. "
-                "ClickHouse SQL compatibility may be limited. "
-                "Install with: INSTALL chsql FROM community; LOAD chsql;"
-            )
-
-    # Regex pattern to match ClickHouse-style parameters: {param:Type}
-    PARAM_RE = re.compile(r"\{(\w+):[^\}]+\}")
-
-    def _convert_query_parameters(
-        self, query: str, parameters: Optional[dict] = None
-    ) -> tuple[str, Optional[list]]:
-        """Convert ClickHouse-style parameters to DuckDB format.
-
-        ClickHouse uses {param:Type} format, DuckDB uses ? placeholders.
-        Parameters are extracted in SQL order (left to right).
+    def _validate_and_convert_sql(self, select_statement: Any) -> Any:
+        """Validate and convert select_statement to SQL object if needed.
 
         Args:
-            query: SQL query with ClickHouse-style parameters
-            parameters: Parameter dictionary (ClickHouse-style)
+            select_statement: SQL object or string to validate/convert
 
         Returns:
-            Tuple of (converted_query, duckdb_params_list)
+            SQL object ready for use with duckdb_datacacher
 
         Raises:
-            KeyError: If a parameter in the query is missing from the parameters dict
+            ValueError: If select_statement is None or invalid type
         """
-        if not parameters:
-            return query, None
+        if select_statement is None:
+            raise ValueError("select_statement is None")
 
-        duckdb_params: list[Any] = []
+        # If SQL class is available and select_statement is not already a SQL object,
+        # try to convert string to SQL object
+        if SQL is not None:
+            if not isinstance(select_statement, SQL):
+                # If it's a string, create a SQL object with it
+                if isinstance(select_statement, str):
+                    select_statement = SQL(select_statement)
+                else:
+                    raise ValueError(f"Expected SQL object or string; got {type(select_statement)}")
+        else:
+            # If SQL class is not available, check if it has SQL-like attributes
+            # (sql and bindings) or pass through and let cacher handle validation
+            if not (hasattr(select_statement, "sql") and hasattr(select_statement, "bindings")):
+                raise ValueError(
+                    "SQL class not available. select_statement must be a SQL object "
+                    "with 'sql' and 'bindings' attributes. "
+                    "Ensure qr_common is properly installed."
+                )
 
-        def replacer(match: re.Match) -> str:
-            """Replace parameter placeholder with ? and collect parameter value.
+        return select_statement
 
-            Handles both scalar values and arrays/lists for IN clauses.
-            """
-            name = match.group(1)
-            if name not in parameters:
-                raise KeyError(f"Missing parameter: {name}")
+    def save(
+        self,
+        select_statement: Any,
+        file_path: str,
+        debug: bool = False,
+        credentials: Optional[str] = None,
+    ) -> bool:
+        """Save query results to S3 as Parquet file.
 
-            value = parameters[name]
+        Uses the underlying duckdb_datacacher's save method to write data to S3.
+        Supports optional Parquet encryption via credentials.
 
-            # Handle array/list parameters for IN clauses
-            if isinstance(value, (list, tuple)):
-                # Fail fast on empty lists - invalid SQL: WHERE id IN ()
-                if not value:
-                    raise ValueError(f"Empty list provided for parameter '{name}'")
-                placeholders = ", ".join("?" for _ in value)
-                duckdb_params.extend(value)
-                return f"({placeholders})"
+        Args:
+            select_statement: SQL object with query and bindings, or SQL query string
+            file_path: S3 file path (relative to bucket)
+            debug: If True, log the generated query
+            credentials: Optional encryption credentials for Parquet file
 
-            # Handle scalar parameters
-            duckdb_params.append(value)
-            return "?"
+        Returns:
+            True if save was successful
 
-        converted_query = self.PARAM_RE.sub(replacer, query)
+        Raises:
+            ValueError: If select_statement is None or invalid type
+        """
+        select_statement = self._validate_and_convert_sql(select_statement)
 
-        return converted_query, duckdb_params
+        return self.cacher.save(
+            select_statement=select_statement,
+            file_path=file_path,
+            debug=debug,
+            credentials=credentials,
+        )
+
+    def load(
+        self,
+        select_statement: Any,
+        debug: bool = False,
+    ) -> Optional[pd.DataFrame]:
+        """Load data from S3 Parquet file into a Pandas DataFrame.
+
+        Uses the underlying duckdb_datacacher's load method to read data from S3.
+
+        Args:
+            select_statement: SQL object with query and bindings, or SQL query string
+            debug: If True, log the generated query
+
+        Returns:
+            Pandas DataFrame with loaded data, or None if result is empty
+
+        Raises:
+            ValueError: If select_statement is None or invalid type
+        """
+        select_statement = self._validate_and_convert_sql(select_statement)
+
+        return self.cacher.load(select_statement=select_statement, debug=debug)
+
+    def staleness_check(
+        self,
+        file_name: str,
+        lookback_delta_seconds: int,
+        in_memory: bool = False,
+    ) -> bool:
+        """Check whether a file or in-memory table is stale.
+
+        Uses the underlying duckdb_datacacher's staleness_check method.
+        Checks if the last modified time of a file/table exceeds the lookback delta.
+
+        Args:
+            file_name: Name of the file or table to check
+            lookback_delta_seconds: Maximum age in seconds before considered stale
+            in_memory: If True, check in-memory table (recommended for DuckDB)
+
+        Returns:
+            True if stale, False if fresh or unknown
+
+        Note:
+            This functionality is best suited for in-memory tables in DuckDB.
+        """
+        return self.cacher.staleness_check(
+            file_name=file_name,
+            lookback_delta_seconds=lookback_delta_seconds,
+            in_memory=in_memory,
+        )
+
+    def get_bucket(self) -> str:
+        """Get the S3 bucket name configured for this DuckDB resource.
+
+        Returns:
+            S3 bucket name string
+
+        Raises:
+            AttributeError: If bucket is not available in the cacher
+        """
+        if not hasattr(self.cacher, "bucket"):
+            raise AttributeError("Bucket not available in duckdb_datacacher")
+        return self.cacher.bucket
+
+    def register_dataframe(self, name: str, df: pd.DataFrame) -> None:
+        """Register a pandas DataFrame as a temporary table in DuckDB.
+
+        Public method to register DataFrames for use in SQL queries.
+
+        Args:
+            name: Name for the temporary table
+            df: Pandas DataFrame to register
+        """
+        self._con.register(name, df)
+
+    def unregister_dataframe(self, name: str) -> None:
+        """Unregister a temporary table from DuckDB.
+
+        Public method to clean up registered DataFrames.
+
+        Args:
+            name: Name of the temporary table to unregister
+        """
+        try:
+            self._con.unregister(name)
+        except Exception:
+            # Table may already be unregistered, ignore
+            pass

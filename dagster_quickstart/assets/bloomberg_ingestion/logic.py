@@ -6,9 +6,9 @@ from typing import Any, Dict, List, Optional, Tuple
 import polars as pl
 from dagster import AssetExecutionContext
 
-from dagster_quickstart.resources import ClickHouseResource, PyPDLResource
+from dagster_quickstart.resources import DuckDBResource, PyPDLResource
 from dagster_quickstart.utils.datetime_utils import parse_timestamp, validate_timestamp
-from dagster_quickstart.utils.exceptions import DatabaseError, PyPDLError, MetaSeriesNotFoundError
+from dagster_quickstart.utils.exceptions import DatabaseError, MetaSeriesNotFoundError, PyPDLError
 from dagster_quickstart.utils.summary import AssetSummary
 from database.lookup_tables import LookupTableManager
 from database.meta_series import MetaSeriesManager
@@ -477,7 +477,7 @@ def ingest_bloomberg_data_for_series(
     context: AssetExecutionContext,
     config: BloombergIngestionConfig,
     pypdl_resource: PyPDLResource,
-    clickhouse: ClickHouseResource,
+    duckdb: DuckDBResource,
     series_id: int,
     target_date: datetime,
 ) -> pl.DataFrame:
@@ -490,7 +490,7 @@ def ingest_bloomberg_data_for_series(
         context: Dagster execution context
         config: Bloomberg ingestion configuration
         pypdl_resource: PyPDL resource
-        clickhouse: ClickHouse resource
+        duckdb: DuckDB resource
         series_id: Series ID to ingest (from partition key)
         target_date: Target date for data ingestion (from partition key)
 
@@ -498,9 +498,9 @@ def ingest_bloomberg_data_for_series(
         Summary DataFrame with ingestion results
     """
     # Initialize managers
-    meta_manager = MetaSeriesManager(clickhouse)
-    lookup_manager = LookupTableManager(clickhouse)
-    value_manager = ValueDataManager(clickhouse)
+    meta_manager = MetaSeriesManager(duckdb)
+    lookup_manager = LookupTableManager(duckdb)
+    value_manager = ValueDataManager(duckdb)
 
     # Get and validate series exists
     try:
@@ -531,7 +531,7 @@ def ingest_bloomberg_data_for_series(
         return create_skipped_dataframe(series_id, error_reason or "missing metadata")
 
     # Get field type name using LookupTableManager and validate with ReferentialIntegrityValidator
-    validator = ReferentialIntegrityValidator(clickhouse)
+    validator = ReferentialIntegrityValidator(duckdb)
     field_name = get_field_type_name(
         lookup_manager, validator, field_type_id, series_id, series_code, context
     )

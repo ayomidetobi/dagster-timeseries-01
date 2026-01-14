@@ -5,7 +5,7 @@ from typing import Dict, List, Optional, Set
 
 from dagster import AssetExecutionContext
 
-from dagster_quickstart.resources import ClickHouseResource
+from dagster_quickstart.resources import DuckDBResource
 from dagster_quickstart.utils.constants import (
     CODE_BASED_LOOKUPS,
     DB_COLUMNS,
@@ -43,15 +43,17 @@ class ReferentialIntegrityValidator:
 
     This validator ensures that all lookup values referenced in meta series
     exist in their respective lookup tables before insertion.
+
+    Uses DuckDB views over S3 control tables for validation.
     """
 
-    def __init__(self, clickhouse: ClickHouseResource):
-        """Initialize the validator with a ClickHouse resource.
+    def __init__(self, duckdb: DuckDBResource):
+        """Initialize the validator with a DuckDB resource.
 
         Args:
-            clickhouse: ClickHouse resource for database queries
+            duckdb: DuckDB resource for database queries (uses views over S3 control tables)
         """
-        self.clickhouse = clickhouse
+        self.duckdb = duckdb
         self._lookup_cache: Dict[str, Set[str]] = {}
 
     def _get_query_field(self, lookup_type: str) -> str:
@@ -91,13 +93,14 @@ class ReferentialIntegrityValidator:
             f"SELECT DISTINCT {query_field} FROM {table_name} "
             f"WHERE {query_field} IS NOT NULL AND {query_field} != ''"
         )
-        result = self.clickhouse.execute_query(query)
+        df = self.duckdb.execute_query(query)
 
         values: Set[str] = set()
-        if hasattr(result, "result_rows") and result.result_rows:
-            for row in result.result_rows:
-                if row[0] is not None:
-                    values.add(str(row[0]).strip())
+        if df is not None and not df.empty:
+            for _, row in df.iterrows():
+                value = row[query_field]
+                if value is not None:
+                    values.add(str(value).strip())
 
         self._lookup_cache[lookup_type] = values
         return values
@@ -153,11 +156,18 @@ class ReferentialIntegrityValidator:
         for row in staging_data:
             series_code = str(row.get("series_code", "") or "")
 
+            # Log empty series_code for debugging (useful for small datasets)
+            if not series_code:
+                context.log.debug(
+                    f"Validating lookup references for row without series_code: {row}"
+                )
+
             # Validate all lookup references using the processing order from constants
             for lookup_type in LOOKUP_TABLE_PROCESSING_ORDER:
                 lookup_value = row.get(lookup_type)
                 if lookup_value is not None:
-                    lookup_value_str = str(lookup_value).strip()
+                    # Convert to string; stripping will be handled by validate_lookup_reference
+                    lookup_value_str = str(lookup_value)
                     if lookup_value_str:
                         error = self.validate_lookup_reference(
                             lookup_type, lookup_value_str, series_code

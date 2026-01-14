@@ -2,66 +2,66 @@
 
 from decimal import Decimal
 
-from dagster_quickstart.utils.helpers import round_six_dp
+from dagster_quickstart.utils.helpers import round_to_six_decimal_places
 
 
-def test_round_six_dp_with_float():
+def test_round_to_six_decimal_places_with_float():
     """Test rounding a float to 6 decimal places."""
-    result = round_six_dp(123.4567890123)
+    result = round_to_six_decimal_places(123.4567890123)
     assert result == Decimal("123.456789")
     assert isinstance(result, Decimal)
 
 
-def test_round_six_dp_with_decimal():
+def test_round_to_six_decimal_places_with_decimal():
     """Test rounding a Decimal to 6 decimal places."""
     value = Decimal("987.6543210987")
-    result = round_six_dp(value)
+    result = round_to_six_decimal_places(value)
     assert result == Decimal("987.654321")
     assert isinstance(result, Decimal)
 
 
-def test_round_six_dp_rounding_up():
+def test_round_to_six_decimal_places_rounding_up():
     """Test that rounding follows ROUND_HALF_UP rule."""
     # Use Decimal to avoid floating point precision issues
     # 0.0000005 should round up to 0.000001
-    result = round_six_dp(Decimal("0.0000005"))
+    result = round_to_six_decimal_places(Decimal("0.0000005"))
     assert result == Decimal("0.000001")
 
 
-def test_round_six_dp_rounding_down():
+def test_round_to_six_decimal_places_rounding_down():
     """Test that values below 0.5 round down."""
     # 0.0000004 should round down to 0.000000
-    result = round_six_dp(0.0000004)
+    result = round_to_six_decimal_places(0.0000004)
     assert result == Decimal("0.000000")
 
 
-def test_round_six_dp_fewer_decimal_places():
+def test_round_to_six_decimal_places_fewer_decimal_places():
     """Test rounding a number with fewer than 6 decimal places."""
-    result = round_six_dp(42.5)
+    result = round_to_six_decimal_places(42.5)
     assert result == Decimal("42.500000")
 
 
-def test_round_six_dp_integer():
+def test_round_to_six_decimal_places_integer():
     """Test rounding an integer (should add .000000)."""
-    result = round_six_dp(100)
+    result = round_to_six_decimal_places(100)
     assert result == Decimal("100.000000")
 
 
-def test_round_six_dp_negative_number():
+def test_round_to_six_decimal_places_negative_number():
     """Test rounding a negative number."""
-    result = round_six_dp(-123.4567890123)
+    result = round_to_six_decimal_places(-123.4567890123)
     assert result == Decimal("-123.456789")
 
 
-def test_round_six_dp_zero():
+def test_round_to_six_decimal_places_zero():
     """Test rounding zero."""
-    result = round_six_dp(0.0)
+    result = round_to_six_decimal_places(0.0)
     assert result == Decimal("0.000000")
 
 
-def test_round_six_dp_large_number():
+def test_round_to_six_decimal_places_large_number():
     """Test rounding a large number."""
-    result = round_six_dp(1234567.890123456)
+    result = round_to_six_decimal_places(1234567.890123456)
     assert result == Decimal("1234567.890123")
 
 

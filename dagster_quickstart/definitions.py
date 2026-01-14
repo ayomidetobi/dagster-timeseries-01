@@ -13,11 +13,11 @@ from dagster_msteams import (
 from dagster_polars import PolarsParquetIOManager
 from decouple import config
 
-from dagster_clickhouse.io_manager import clickhouse_io_manager
+from dagster_clickhouse.io_manager import duckdb_io_manager
 from dagster_quickstart.assets import (
+    bloomberg_ingestion,
     calculations,
     csv_loader,
-    bloomberg_ingestion,
     hackernews,
     ingestion,
 )
@@ -27,11 +27,11 @@ from dagster_quickstart.notifications.email_sensors import (
 from dagster_quickstart.notifications.teams_messages import (
     failure_message_fn,
 )
-
 from dagster_quickstart.resources import (
     OutlookEmailResource,
     PyPDLResource,
 )
+from dagster_quickstart.resources.duckdb_datacacher import duckdb_datacacher
 from dagster_quickstart.utils.database_config import get_database_resource
 
 all_assets = load_assets_from_modules(
@@ -41,26 +41,24 @@ all_assets = load_assets_from_modules(
 # Load asset checks
 all_asset_checks = load_asset_checks_from_modules([csv_loader])
 
-# Get database resource based on configuration in constants.py
-# Set DATABASE_TYPE in constants.py or via DATABASE_TYPE environment variable
-# For DuckDB, provide duckdb_cacher parameter if needed
-try:
-    # Try to get DuckDB cacher if DuckDB is configured
-    from qr_common.datacachers.duckdb_datacacher import duckdb_datacacher
-
-    duckdb_cacher = duckdb_datacacher()  # Configure with your actual parameters
-except (ImportError, Exception):
-    # If DuckDB cacher is not available or ClickHouse is configured, use None
-    duckdb_cacher = None
+# Initialize DuckDB datacacher with S3 credentials from environment
+# You can configure these via environment variables or pass directly
+duckdb_cacher = duckdb_datacacher(
+    bucket=config("S3_BUCKET", default=None),
+    access_key=config("S3_ACCESS_KEY", default=None),
+    secret_key=config("S3_SECRET_KEY", default=None),
+    region=config("S3_REGION", default=None),
+)
 
 database_resource = get_database_resource(duckdb_cacher=duckdb_cacher)
 
 # Define resources
-# Database resource is configured via DATABASE_TYPE in constants.py or environment variable
+# Using DuckDB with S3 as the datalake
 resources = {
-    "clickhouse": database_resource,  # Keep name as "clickhouse" for compatibility
+    "duckdb": database_resource,
     "pypdl_resource": PyPDLResource(),
-    "io_manager": clickhouse_io_manager,
+    "io_manager": duckdb_io_manager,  # Default IO manager
+    "duckdb_io_manager": duckdb_io_manager,  # Explicit key for CSV loader assets
     "polars_parquet_io_manager": PolarsParquetIOManager(base_dir="data/parquet"),
     "msteams": MSTeamsResource(hook_url=config("TEAMS_WEBHOOK_URL")),
     "outlook_email": OutlookEmailResource.from_config(),

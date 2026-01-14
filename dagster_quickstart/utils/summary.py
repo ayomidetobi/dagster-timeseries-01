@@ -8,15 +8,13 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 if TYPE_CHECKING:
-    from dagster import AssetExecutionContext, MetadataValue
-
     import pandas as pd
     import polars as pl
+    from dagster import AssetExecutionContext, MetadataValue
 else:
-    from dagster import AssetExecutionContext, MetadataValue
-
     import pandas as pd
     import polars as pl
+    from dagster import AssetExecutionContext, MetadataValue
 
 
 class AssetSummary:

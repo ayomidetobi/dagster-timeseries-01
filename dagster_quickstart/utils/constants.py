@@ -47,10 +47,8 @@ META_SERIES_REQUIRED_COLUMNS: List[str] = [
     "ticker",
 ]
 
-# Staging columns for meta series (meta series fields + all lookup types)
-META_SERIES_STAGING_COLUMNS: List[str] = (
-    META_SERIES_SPECIFIC_COLUMNS + LOOKUP_TABLE_PROCESSING_ORDER
-)
+# All columns for meta series (meta series fields + all lookup types)
+META_SERIES_ALL_COLUMNS: List[str] = META_SERIES_SPECIFIC_COLUMNS + LOOKUP_TABLE_PROCESSING_ORDER
 
 # Required columns for series dependencies CSV
 SERIES_DEPENDENCIES_REQUIRED_COLUMNS: List[str] = [
@@ -182,6 +180,19 @@ DATA_QUALITY_DIMENSIONS: List[str] = [
 ]
 
 # Database configuration
-# Set to "clickhouse" or "duckdb" to switch between database backends
-# Can be overridden via DATABASE_TYPE environment variable
-DATABASE_TYPE: str = "clickhouse"  # Options: "clickhouse", "duckdb"
+# Using DuckDB with S3 as the datalake
+DATABASE_TYPE: str = "duckdb"  # Options: "clickhouse", "duckdb"
+
+# S3 path constants
+S3_BASE_PATH_VALUE_DATA: str = "value-data"
+S3_PARQUET_FILE_NAME: str = "data.parquet"
+
+# S3 control table path constants (system of record for control-plane tables)
+S3_BASE_PATH_CONTROL: str = "control"
+S3_CONTROL_LOOKUP: str = "lookup"
+S3_CONTROL_METADATA_SERIES: str = "metadata_series"
+S3_CONTROL_FIELD_MAP: str = "field_map"
+
+# SQL query constants
+SQL_FILE_PATH_PLACEHOLDER: str = "$file_path"
+SQL_READ_PARQUET_TEMPLATE: str = "read_parquet('$file_path')"

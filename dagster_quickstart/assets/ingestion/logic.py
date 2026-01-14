@@ -7,9 +7,9 @@ from typing import Any, Dict, List, Optional
 import polars as pl
 from dagster import AssetExecutionContext
 
-from dagster_quickstart.resources import ClickHouseResource
+from dagster_quickstart.resources import DuckDBResource
 from dagster_quickstart.utils.exceptions import DatabaseError
-from dagster_quickstart.utils.helpers import round_six_dp
+from dagster_quickstart.utils.helpers import round_to_six_decimal_places
 from dagster_quickstart.utils.summary import AssetSummary
 from database.lookup_tables import LookupTableManager
 from database.meta_series import MetaSeriesManager
@@ -119,7 +119,7 @@ def prepare_value_data_for_series(
     Returns:
         List of raw value data dictionaries
 
-    TODO:
+    Todo:
         Replace with actual API integration
     """
     # Generate random positive value between 1.0 and 1000.0
@@ -128,7 +128,9 @@ def prepare_value_data_for_series(
         {
             "series_id": series_id,
             "timestamp": target_date,
-            "value": round_six_dp(raw_value),  # Round to 6 decimal places for consistency
+            "value": round_to_six_decimal_places(
+                raw_value
+            ),  # Round to 6 decimal places for consistency
         }
     ]
     return raw_value_data
@@ -343,7 +345,7 @@ def create_ingestion_summary(
 def ingest_data_for_ticker_source(
     context: AssetExecutionContext,
     config: IngestionConfig,
-    clickhouse: ClickHouseResource,
+    duckdb: DuckDBResource,
     ticker_source: TickerSource,
     target_date: datetime,
 ) -> pl.DataFrame:
@@ -355,7 +357,7 @@ def ingest_data_for_ticker_source(
     Args:
         context: Dagster execution context
         config: Ingestion configuration
-        clickhouse: ClickHouse resource
+        duckdb: DuckDB resource
         ticker_source: Ticker source to filter series by
         target_date: Target date for data ingestion (from partition)
 
@@ -380,9 +382,9 @@ def ingest_data_for_ticker_source(
     )
 
     # Initialize managers
-    meta_manager = MetaSeriesManager(clickhouse)
-    lookup_manager = LookupTableManager(clickhouse)
-    value_manager = ValueDataManager(clickhouse)
+    meta_manager = MetaSeriesManager(duckdb)
+    lookup_manager = LookupTableManager(duckdb)
+    value_manager = ValueDataManager(duckdb)
 
     # Get all active metaSeries
     active_series = meta_manager.get_active_series(limit=10000)
