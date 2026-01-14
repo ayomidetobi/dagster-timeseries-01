@@ -9,7 +9,6 @@ import pandas as pd
 from dagster import (
     AssetExecutionContext,
     AssetKey,
-    MetadataValue,
     RetryPolicy,
     asset,
 )
@@ -19,6 +18,7 @@ from dagster_quickstart.utils.constants import (
     RETRY_POLICY_DELAY_CSV_LOADER,
     RETRY_POLICY_MAX_RETRIES_CSV_LOADER,
 )
+from dagster_quickstart.utils.summary.csv_loader import add_csv_loader_summary_metadata
 
 from .config import MetaSeriesCSVConfig
 from .logic import load_meta_series_logic
@@ -64,11 +64,30 @@ def load_meta_series_from_csv(
     # Convert to DataFrame only for IO manager compatibility
     result_df = pd.DataFrame(result_dict)
 
-    context.add_output_metadata(
-        {
-            "series_loaded": MetadataValue.int(len(result_df)),
-            "details": MetadataValue.json(results),
-        }
+    # Get version date and S3 path for metadata
+    from dagster_quickstart.utils.constants import S3_CONTROL_METADATA_SERIES, S3_PARQUET_FILE_NAME
+    from dagster_quickstart.utils.helpers import (
+        build_full_s3_path,
+        build_s3_control_table_path,
+        get_version_date,
+    )
+
+    version_date = get_version_date()
+    bucket = duckdb.get_bucket()
+    relative_path = build_s3_control_table_path(
+        S3_CONTROL_METADATA_SERIES, version_date, S3_PARQUET_FILE_NAME
+    )
+    s3_control_table_path = build_full_s3_path(bucket, relative_path)
+
+    # Add AssetSummary metadata
+    add_csv_loader_summary_metadata(
+        context=context,
+        records_loaded=len(result_df),
+        record_type="meta_series",
+        details=results,
+        csv_path=config.csv_path,
+        version_date=version_date,
+        s3_control_table_path=s3_control_table_path,
     )
 
     return result_df

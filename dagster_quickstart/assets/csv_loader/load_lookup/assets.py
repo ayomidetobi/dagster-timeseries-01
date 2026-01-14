@@ -8,7 +8,6 @@ control tables for querying.
 import pandas as pd
 from dagster import (
     AssetExecutionContext,
-    MetadataValue,
     RetryPolicy,
     asset,
 )
@@ -17,8 +16,16 @@ from dagster_quickstart.resources import DuckDBResource
 from dagster_quickstart.utils.constants import (
     RETRY_POLICY_DELAY_CSV_LOADER,
     RETRY_POLICY_MAX_RETRIES_CSV_LOADER,
+    S3_CONTROL_LOOKUP,
+    S3_PARQUET_FILE_NAME,
 )
 from dagster_quickstart.utils.exceptions import CSVValidationError
+from dagster_quickstart.utils.helpers import (
+    build_full_s3_path,
+    build_s3_control_table_path,
+    get_version_date,
+)
+from dagster_quickstart.utils.summary.csv_loader import add_csv_loader_summary_metadata
 
 from .config import LookupTableCSVConfig
 from .logic import process_csv_to_s3_control_table_lookup_tables
@@ -66,9 +73,6 @@ def load_lookup_tables_from_csv(
     )
     context.log.info("Using S3 Parquet staging architecture")
 
-    # Process all lookup tables using CSV → S3 control table flow
-    # CSV is loaded directly into DuckDB temp table, no pandas involved
-    # This writes validated data directly to S3 Parquet control tables (versioned, immutable)
     context.log.info(
         "Using CSV → S3 control table flow (versioned, immutable control-plane tables)"
     )
@@ -84,12 +88,24 @@ def load_lookup_tables_from_csv(
                 for name, id_val in results.items()
             ]
         )
-        context.add_output_metadata(
-            {
-                "lookups_loaded": MetadataValue.int(len(result_df)),
-                "lookup_table_type": MetadataValue.text(config.lookup_table_type),
-                "details": MetadataValue.json(results),
-            }
+        # Get version date and S3 path for metadata
+        version_date = get_version_date()
+        bucket = duckdb.get_bucket()
+        relative_path = build_s3_control_table_path(
+            S3_CONTROL_LOOKUP, version_date, S3_PARQUET_FILE_NAME
+        )
+        s3_control_table_path = build_full_s3_path(bucket, relative_path)
+
+        # Add AssetSummary metadata
+        add_csv_loader_summary_metadata(
+            context=context,
+            records_loaded=len(result_df),
+            record_type="lookup_tables",
+            details={config.lookup_table_type: results},
+            csv_path=config.csv_path,
+            version_date=version_date,
+            s3_control_table_path=s3_control_table_path,
+            lookup_table_type=config.lookup_table_type,
         )
         return result_df
     elif config.lookup_table_type == "all":
@@ -100,16 +116,28 @@ def load_lookup_tables_from_csv(
             for name, id_val in type_results.items():
                 rows.append({"lookup_table_type": lookup_type, "name": name, "id": id_val})
         result_df = pd.DataFrame(rows)
-        context.add_output_metadata(
-            {
-                "lookups_loaded": MetadataValue.int(total_loaded),
-                "lookup_table_type": MetadataValue.text("all"),
-                "details": MetadataValue.json(all_results),
-            }
+        # Get version date and S3 path for metadata
+        version_date = get_version_date()
+        bucket = duckdb.get_bucket()
+        relative_path = build_s3_control_table_path(
+            S3_CONTROL_LOOKUP, version_date, S3_PARQUET_FILE_NAME
+        )
+        s3_control_table_path = build_full_s3_path(bucket, relative_path)
+
+        # Add AssetSummary metadata
+        add_csv_loader_summary_metadata(
+            context=context,
+            records_loaded=total_loaded,
+            record_type="lookup_tables",
+            details=all_results,
+            csv_path=config.csv_path,
+            version_date=version_date,
+            s3_control_table_path=s3_control_table_path,
+            lookup_table_type="all",
         )
         return result_df
     else:
         raise CSVValidationError(
             f"lookup_table_type '{config.lookup_table_type}' not found in CSV. "
-            f"Available lookup types: {list(all_results.keys())}"
+            f"Available lookup types: {list[str](all_results.keys())}"
         )

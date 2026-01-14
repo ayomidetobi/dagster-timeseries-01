@@ -1,6 +1,7 @@
 """Bloomberg data ingestion assets using pyeqdr.pypdl."""
 
-import polars as pl
+from typing import Optional
+
 from dagster import (
     AssetExecutionContext,
     AssetKey,
@@ -19,7 +20,6 @@ from dagster_quickstart.utils.partitions import (
 )
 
 from .config import BloombergIngestionConfig
-from .dummy_clickhouse import DummyClickHouseResource
 from .logic import ingest_bloomberg_data_for_series
 
 
@@ -28,6 +28,7 @@ from .logic import ingest_bloomberg_data_for_series
     description="Ingest Bloomberg data for a single metaSeries using pyeqdr.pypdl",
     deps=[AssetKey("load_meta_series_from_csv")],
     kinds=["duckdb"],
+    io_manager_key="duckdb_io_manager",
     owners=["team:mqrm-data-eng"],
     tags={"m360-mqrm": "", "bloomberg": "", "pypdl": ""},
     retry_policy=RetryPolicy(
@@ -40,20 +41,20 @@ def ingest_bloomberg_data_pypdl(
     config: BloombergIngestionConfig,
     pypdl_resource: PyPDLResource,
     duckdb: DuckDBResource,
-) -> pl.DataFrame:
+) -> Optional[dict]:
     """Ingest Bloomberg data for a single metaSeries using PyPDL.
 
     This asset uses multi-dimensional partitions (daily + dynamic series).
-    Each partition processes data for one series (by series_id) for one date.
+    Each partition processes data for one series (by series_code) for one date.
     Dagster handles concurrency by running multiple partitions in parallel.
 
     This asset:
-    1. Gets the metaSeries by series_id from the partition key
+    1. Gets the metaSeries by series_code from the partition key
     2. Gets the field_type_name from field_type lookup (should contain Bloomberg field code like "PX_LAST")
     3. Constructs data_source as "bloomberg/ts/{field_type_name}"
     4. Uses ticker as data_code
     5. Fetches data from Bloomberg via PyPDL for the partition date
-    6. Saves data to DuckDB valueData table
+    6. Saves data to S3 Parquet files
 
     Args:
         context: Dagster execution context (includes partition keys: date and series)
@@ -62,7 +63,8 @@ def ingest_bloomberg_data_pypdl(
         duckdb: DuckDB resource
 
     Returns:
-        Summary DataFrame with ingestion results
+        Result dictionary with ingestion results, or None if skipped/failed
+        All reporting is done via Dagster metadata and AssetSummary
     """
     # Extract partition keys from multi-dimensional partition
     if context.partition_key is None:
@@ -73,32 +75,21 @@ def ingest_bloomberg_data_pypdl(
         raise ValueError("Partition keys are empty")
 
     date_key = partition_keys.get("date")
-    series_id_str = partition_keys.get("series")
+    series_code = partition_keys.get("series")
 
     if date_key is None:
         raise ValueError("Date partition key is required")
-    if series_id_str is None:
+    if series_code is None:
         raise ValueError("Series partition key is required")
-
-    # Convert series_id from string to int (partition keys are strings)
-    try:
-        series_id = int(series_id_str)
-    except ValueError:
-        context.log.error(f"Invalid series_id in partition key: {series_id_str}")
-        raise ValueError(f"Invalid series_id: {series_id_str}")
 
     # Get target date from partition
     target_date = get_partition_date(date_key)
 
-    context.log.info("Processing partition: series_id=%s, date=%s", series_id, target_date.date())
-
-    # Use dummy ClickHouse data if configured
-    # Type ignore needed because DummyClickHouseResource implements the same interface
-    if config.use_dummy_data:
-        context.log.info("Using dummy ClickHouse data for testing")
-        duckdb = DummyClickHouseResource()  # type: ignore
-
-    # Run ingestion function for single series and date
-    return ingest_bloomberg_data_for_series(
-        context, config, pypdl_resource, duckdb, series_id, target_date
+    context.log.info(
+        "Processing partition: series_code=%s, date=%s", series_code, target_date.date()
     )
+
+    ingest_bloomberg_data_for_series(
+        context, config, pypdl_resource, duckdb, series_code, target_date
+    )
+    return None

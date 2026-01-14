@@ -301,6 +301,28 @@ def load_csv_to_temp_table(
         raise CSVValidationError(error_msg) from e
 
 
+def build_s3_value_data_path(
+    series_code: str, partition_date: datetime, filename: str = "data.parquet"
+) -> str:
+    """Build relative S3 path for value data Parquet file.
+
+    Value data is partitioned by series_code and date for efficient querying and idempotency.
+    Path format: value-data/series_code={series_code}/date={date}/data.parquet
+
+    Args:
+        series_code: Series code (readable identifier)
+        partition_date: Partition date (datetime object)
+        filename: Parquet filename (default: 'data.parquet')
+
+    Returns:
+        Relative S3 path (e.g., 'value-data/series_code=AAPL_US_EQ/date=2025-12-01/data.parquet')
+    """
+    from dagster_quickstart.utils.constants import S3_BASE_PATH_VALUE_DATA
+
+    date_str = partition_date.strftime("%Y-%m-%d")
+    return f"{S3_BASE_PATH_VALUE_DATA}/series_code={series_code}/date={date_str}/{filename}"
+
+
 def write_to_s3_control_table(
     duckdb: DuckDBResource,
     relative_path: str,
@@ -354,6 +376,254 @@ def write_to_s3_control_table(
         if context:
             context.log.error(error_msg)
         raise DatabaseQueryError(error_msg) from e
+
+
+def save_value_data_to_s3(
+    duckdb: DuckDBResource,
+    value_data: List[Dict[str, Any]],
+    series_code: str,
+    partition_date: datetime,
+    context: Optional[AssetExecutionContext] = None,
+) -> str:
+    """Save value data to S3 Parquet file using DuckDBResource.
+
+    Creates a temp table, writes data to S3, then cleans up the temp table.
+    Uses the same pattern as meta series loading for consistency.
+
+    Args:
+        duckdb: DuckDB resource with S3 access
+        value_data: List of dicts with keys: series_id, timestamp, value
+        series_code: Series code for path construction
+        partition_date: Partition date for path construction
+        context: Optional Dagster context for logging
+
+    Returns:
+        Relative S3 path where data was saved
+
+    Raises:
+        DatabaseQueryError: If write operation fails
+    """
+    if not value_data:
+        if context:
+            context.log.warning(f"No value data to save for series_code={series_code}")
+        return ""
+
+    # Build S3 path
+    relative_path = build_s3_value_data_path(series_code, partition_date)
+
+    # Create temp table with value data using DuckDB native VALUES
+    import uuid
+
+    temp_table = f"_temp_value_data_{uuid.uuid4().hex[:8]}"
+    try:
+        # Build VALUES clause from value_data
+        values_parts = []
+        for row in value_data:
+            series_id = row.get("series_id")
+            timestamp = row.get("timestamp")
+            value = row.get("value")
+            # Format timestamp and value for SQL
+            timestamp_str = (
+                f"'{timestamp.isoformat()}'"
+                if isinstance(timestamp, datetime)
+                else f"'{timestamp}'"
+            )
+            values_parts.append(f"({series_id}, {timestamp_str}, {value})")
+
+        values_clause = ", ".join(values_parts)
+
+        # Create temp table using VALUES
+        create_table_sql = f"""
+            CREATE TEMP TABLE {temp_table} AS
+            SELECT * FROM (VALUES {values_clause}) AS t(series_id, timestamp, value)
+        """
+        duckdb.execute_command(create_table_sql)
+
+        # Build SELECT query with ordering
+        select_query = f"SELECT series_id, timestamp, value FROM {temp_table} ORDER BY timestamp"
+
+        # Write to S3 using DuckDBResource.save()
+        success = duckdb.save(
+            select_statement=select_query,
+            file_path=relative_path,
+        )
+
+        if not success:
+            raise DatabaseQueryError(f"Failed to write value data to S3: {relative_path}")
+
+        if context:
+            # Extract series_id from value_data if available for logging
+            series_id = value_data[0].get("series_id") if value_data else None
+            context.log.info(
+                f"Saved {len(value_data)} rows of value data to S3",
+                extra={
+                    "series_code": series_code,
+                    "series_id": series_id,
+                    "partition_date": partition_date.date().isoformat(),
+                    "s3_path": relative_path,
+                    "row_count": len(value_data),
+                },
+            )
+
+        return relative_path
+    except Exception as e:
+        error_msg = f"Failed to save value data to S3 {relative_path}: {e}"
+        if context:
+            context.log.error(error_msg)
+        raise DatabaseQueryError(error_msg) from e
+    finally:
+        # Clean up temp table (DROP TABLE for temp tables)
+        try:
+            duckdb.execute_command(f"DROP TABLE IF EXISTS {temp_table}")
+        except Exception:
+            pass  # Ignore cleanup errors
+
+
+def create_ingestion_result_dict(
+    series_id: int, series_code: str, rows_ingested: int, status: str, reason: Optional[str] = None
+) -> Dict[str, Any]:
+    """Create a result dictionary for ingestion operations.
+
+    Args:
+        series_id: Series ID
+        series_code: Series code
+        rows_ingested: Number of rows ingested
+        status: Status string ("success", "skipped", "failed")
+        reason: Optional reason for status
+
+    Returns:
+        Dictionary with ingestion results
+    """
+    result = {
+        "series_id": series_id,
+        "series_code": series_code,
+        "rows_ingested": rows_ingested,
+        "status": status,
+    }
+    if reason:
+        result["reason"] = reason
+    return result
+
+
+def check_existing_value_data_in_s3(
+    duckdb: DuckDBResource,
+    series_code: str,
+    target_date: datetime,
+    force_refresh: bool,
+    context: Optional[AssetExecutionContext] = None,
+) -> bool:
+    """Check if value data already exists in S3 for the series and date.
+
+    Args:
+        duckdb: DuckDB resource with S3 access
+        series_code: Series code for path construction and logging
+        target_date: Target date to check
+        force_refresh: Whether to force refresh (skip check if True)
+        context: Optional Dagster execution context for logging
+
+    Returns:
+        True if data exists and should be skipped, False otherwise
+    """
+    if force_refresh:
+        return False
+
+    relative_path = build_s3_value_data_path(series_code, target_date)
+    bucket = duckdb.get_bucket()
+    full_s3_path = build_full_s3_path(bucket, relative_path)
+
+    try:
+        # Try to read the file - if it exists and has data, skip
+        query = f"SELECT COUNT(*) as count FROM read_parquet('{full_s3_path}')"
+        result = duckdb.execute_query(query)
+        if result is not None and not result.empty:
+            # DuckDB returns results as DataFrame-like object, access first row
+            count = result.iloc[0]["count"] if hasattr(result, "iloc") else result["count"].iloc[0]
+            if count > 0:
+                if context:
+                    context.log.info(
+                        "Data already exists in S3, skipping",
+                        extra={
+                            "series_code": series_code,
+                            "target_date": target_date.date().isoformat(),
+                            "s3_path": relative_path,
+                            "existing_rows": int(count),
+                        },
+                    )
+                return True
+    except Exception:
+        # File doesn't exist or can't be read, proceed with ingestion
+        pass
+
+    return False
+
+
+def process_time_series_data_points(
+    data_points: List[Dict[str, Any]],
+    series_id: int,
+    series_code: str,
+    context: Optional[AssetExecutionContext] = None,
+) -> List[Dict[str, Any]]:
+    """Process and validate time-series data points from external sources.
+
+    Parses timestamps and validates them, converting to UTC with proper precision.
+    Filters out invalid data points.
+
+    Args:
+        data_points: Raw data points with 'timestamp' and 'value' keys
+        series_id: Series ID
+        series_code: Series code for logging
+        context: Optional Dagster execution context for logging
+
+    Returns:
+        List of validated value data dictionaries with keys: series_id, timestamp, value
+    """
+    from dagster_quickstart.utils.datetime_utils import parse_timestamp, validate_timestamp
+
+    value_data = []
+    for point in data_points:
+        timestamp = point.get("timestamp")
+        value = point.get("value")
+
+        if timestamp and value is not None:
+            # Parse and validate timestamp to UTC with DateTime64(6) precision
+            parsed_timestamp = parse_timestamp(timestamp)
+            if parsed_timestamp is None:
+                if context:
+                    context.log.warning(
+                        "Could not parse timestamp",
+                        extra={
+                            "series_id": series_id,
+                            "series_code": series_code,
+                            "timestamp": str(timestamp),
+                        },
+                    )
+                continue
+
+            # Validate and normalize timestamp
+            try:
+                validated_timestamp = validate_timestamp(parsed_timestamp, field_name="timestamp")
+            except ValueError as e:
+                if context:
+                    context.log.warning(
+                        "Invalid timestamp",
+                        extra={
+                            "series_id": series_id,
+                            "series_code": series_code,
+                            "timestamp": str(timestamp),
+                            "error": str(e),
+                        },
+                    )
+                continue
+
+            value_data.append(
+                {
+                    "series_id": series_id,
+                    "timestamp": validated_timestamp,
+                    "value": float(value),
+                }
+            )
+
+    return value_data
 
 
 def create_or_update_duckdb_view(
