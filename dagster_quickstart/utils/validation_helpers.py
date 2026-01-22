@@ -5,7 +5,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 from dagster import AssetExecutionContext
 
-from dagster_quickstart.utils.exceptions import CalculationError
+from dagster_quickstart.resources import DuckDBResource
+from dagster_quickstart.utils.exceptions import CalculationError, ReferentialIntegrityError
 from database.referential_integrity import ReferentialIntegrityValidator
 
 # Calculation type constants
@@ -269,3 +270,66 @@ def validate_parent_series_in_metaseries(
         raise CalculationError(
             f"No parent series found in metaSeries for dependencies of {derived_series_code}"
         )
+
+
+def validate_referential_integrity_sql(
+    duckdb: DuckDBResource,
+    temp_table: str,
+    validation_query: str,
+    context: Optional[AssetExecutionContext] = None,
+) -> None:
+    """Validate referential integrity using SQL query.
+
+    Generic helper function for SQL-based referential integrity validation.
+    Executes a validation query that should return empty results if validation passes.
+
+    Args:
+        duckdb: DuckDB resource with S3 access
+        temp_table: Temporary table name with data to validate
+        validation_query: SQL query that returns invalid rows (empty = valid)
+        context: Optional Dagster context for logging
+
+    Raises:
+        ReferentialIntegrityError: If validation fails
+    """
+    if context:
+        context.log.info("Validating referential integrity using SQL")
+
+    try:
+        invalid_result = duckdb.execute_query(validation_query)
+        if invalid_result is not None and not invalid_result.empty:
+            error_rows = invalid_result.to_dict("records")
+            error_msg = _format_validation_error_message(error_rows)
+            if context:
+                context.log.error(error_msg)
+            raise ReferentialIntegrityError(error_msg)
+    except ReferentialIntegrityError:
+        raise
+    except Exception as e:
+        error_msg = f"Error during referential integrity validation: {e}"
+        if context:
+            context.log.error(error_msg)
+        raise ReferentialIntegrityError(error_msg) from e
+
+    if context:
+        context.log.info("Referential integrity validation passed")
+
+
+def _format_validation_error_message(error_rows: List[Dict[str, Any]]) -> str:
+    """Format error message for referential integrity validation failures.
+
+    Args:
+        error_rows: List of dictionaries representing invalid rows
+
+    Returns:
+        Formatted error message string
+    """
+    error_msg = (
+        f"Referential integrity validation failed: {len(error_rows)} rows "
+        f"have invalid references. First few errors:\n"
+    )
+    for row in error_rows[:10]:
+        error_msg += f"  - {row}\n"
+    if len(error_rows) > 10:
+        error_msg += f"  ... and {len(error_rows) - 10} more errors\n"
+    return error_msg
