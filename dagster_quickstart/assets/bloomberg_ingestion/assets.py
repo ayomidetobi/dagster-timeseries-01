@@ -14,9 +14,9 @@ from dagster_quickstart.utils.constants import (
     RETRY_POLICY_DELAY_INGESTION,
     RETRY_POLICY_MAX_RETRIES_INGESTION,
 )
+from dagster_quickstart.utils.csv_loader_helpers import ensure_views_exist
 from dagster_quickstart.utils.exceptions import DatabaseQueryError, S3ControlTableNotFoundError
 from dagster_quickstart.utils.helpers import get_version_date
-from dagster_quickstart.utils.csv_loader_helpers import ensure_views_exist
 from dagster_quickstart.utils.partitions import (
     BLOOMBERG_INGESTION_PARTITION,
     get_partition_date,

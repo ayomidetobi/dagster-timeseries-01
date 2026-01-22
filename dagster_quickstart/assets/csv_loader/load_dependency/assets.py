@@ -78,7 +78,7 @@ def load_series_dependencies_from_csv(
 
     # Ensure views exist before calling logic (for validation/reading existing data)
     from dagster_quickstart.utils.csv_loader_helpers import ensure_views_exist
-    
+
     ensure_views_exist(
         context=context,
         duckdb=duckdb,

@@ -19,15 +19,15 @@ from dagster_quickstart.utils.constants import (
     S3_CONTROL_LOOKUP,
     S3_PARQUET_FILE_NAME,
 )
-from dagster_quickstart.utils.exceptions import (
-    DatabaseQueryError,  # noqa: F401  # Used in docstrings
-)
 from dagster_quickstart.utils.duckdb_helpers import (
     build_lookup_table_view_sql,
     build_union_all_query_for_lookup_tables,
     create_or_update_duckdb_view,
     create_temp_table_from_query,
     unregister_temp_table,
+)
+from dagster_quickstart.utils.exceptions import (
+    DatabaseQueryError,  # noqa: F401  # Used in docstrings
 )
 from dagster_quickstart.utils.helpers import (
     build_full_s3_path,
@@ -293,7 +293,6 @@ class LookupTableManager:
 
     # CRUD Operations for S3 Control Tables
 
-
     def save_lookup_tables_to_s3(
         self,
         duckdb: DuckDBResource,
@@ -371,7 +370,6 @@ class LookupTableManager:
             return relative_path
         finally:
             unregister_temp_table(duckdb, combined_temp_table, context)
-
 
     def create_or_update_views(
         self,

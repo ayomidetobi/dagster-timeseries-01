@@ -364,9 +364,13 @@ class AssetSummary:
                     metadata["child_series_count"] = MetadataValue.text(str(child_count))
             # Add calculation log metadata fields
             if "status" in self._asset_metadata:
-                metadata["calculation_status"] = MetadataValue.text(str(self._asset_metadata["status"]))
+                metadata["calculation_status"] = MetadataValue.text(
+                    str(self._asset_metadata["status"])
+                )
             if "input_series_ids" in self._asset_metadata:
-                metadata["input_series_ids"] = MetadataValue.json(self._asset_metadata["input_series_ids"])
+                metadata["input_series_ids"] = MetadataValue.json(
+                    self._asset_metadata["input_series_ids"]
+                )
             if "derived_series_id" in self._asset_metadata:
                 derived_id = self._asset_metadata["derived_series_id"]
                 if isinstance(derived_id, int):
@@ -374,11 +378,15 @@ class AssetSummary:
                 else:
                     metadata["derived_series_id"] = MetadataValue.text(str(derived_id))
             if "derived_series_code" in self._asset_metadata:
-                metadata["derived_series_code"] = MetadataValue.text(str(self._asset_metadata["derived_series_code"]))
+                metadata["derived_series_code"] = MetadataValue.text(
+                    str(self._asset_metadata["derived_series_code"])
+                )
             if "parameters" in self._asset_metadata:
                 metadata["parameters"] = MetadataValue.text(str(self._asset_metadata["parameters"]))
             if "error_message" in self._asset_metadata:
-                metadata["error_message"] = MetadataValue.text(str(self._asset_metadata["error_message"]))
+                metadata["error_message"] = MetadataValue.text(
+                    str(self._asset_metadata["error_message"])
+                )
 
         # Add any remaining metadata that wasn't handled above
         for key, value in self._asset_metadata.items():

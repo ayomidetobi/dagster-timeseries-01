@@ -78,7 +78,7 @@ def fetch_bloomberg_data(
 
         # Generate dummy data points with random values
         # Format: [{"timestamp": datetime, "value": float}, ...]
-        
+
         data_points = []
 
         # Generate random value between 100 and 200

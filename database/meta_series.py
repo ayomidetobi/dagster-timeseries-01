@@ -14,11 +14,11 @@ from dagster_quickstart.utils.constants import (
     S3_CONTROL_METADATA_SERIES,
     S3_PARQUET_FILE_NAME,
 )
-from dagster_quickstart.utils.exceptions import DatabaseQueryError
 from dagster_quickstart.utils.duckdb_helpers import (
     build_meta_series_view_sql,
     create_or_update_duckdb_view,
 )
+from dagster_quickstart.utils.exceptions import DatabaseQueryError
 from dagster_quickstart.utils.helpers import (
     build_full_s3_path,
     build_s3_control_table_path,
@@ -203,7 +203,6 @@ class MetaSeriesManager:
             if context:
                 context.log.error(error_msg)
             raise DatabaseQueryError(error_msg) from e
-
 
     def create_or_update_view(
         self,

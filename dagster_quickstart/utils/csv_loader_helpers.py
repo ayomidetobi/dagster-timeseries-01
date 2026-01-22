@@ -11,7 +11,10 @@ from dagster import AssetExecutionContext
 from dagster_quickstart.resources import DuckDBResource
 from dagster_quickstart.utils.constants import NULL_VALUE_REPRESENTATION
 from dagster_quickstart.utils.duckdb_helpers import load_csv_to_temp_table, unregister_temp_table
-from dagster_quickstart.utils.exceptions import DatabaseQueryError
+from dagster_quickstart.utils.exceptions import (
+    DatabaseQueryError,
+    S3ControlTableNotFoundError,
+)
 
 
 def process_csv_to_s3_with_validation(
@@ -65,9 +68,7 @@ def process_csv_to_s3_with_validation(
     context.log.info(f"Processing CSV to S3 control table: {csv_path}")
 
     # Step 1: Load CSV directly into DuckDB temp table
-    temp_table = load_csv_to_temp_table(
-        duckdb, csv_path, NULL_VALUE_REPRESENTATION, context
-    )
+    temp_table = load_csv_to_temp_table(duckdb, csv_path, NULL_VALUE_REPRESENTATION, context)
 
     try:
         # Step 2: Validate data (if validation function provided)
@@ -78,7 +79,9 @@ def process_csv_to_s3_with_validation(
         # Step 3: Write validated data to S3 control table (versioned, immutable)
         # Call save function with temp_table, version_date, context, and any additional kwargs
         if save_kwargs:
-            relative_path = save_to_s3_func(duckdb, temp_table, version_date, context, **save_kwargs)
+            relative_path = save_to_s3_func(
+                duckdb, temp_table, version_date, context, **save_kwargs
+            )
         else:
             relative_path = save_to_s3_func(duckdb, temp_table, version_date, context)
 
@@ -96,29 +99,43 @@ def process_csv_to_s3_with_validation(
 
 
 def ensure_views_exist(
-    context: AssetExecutionContext,
     duckdb: DuckDBResource,
     version_date: str,
     create_view_funcs: list[Callable[[DuckDBResource, str, Optional[AssetExecutionContext]], None]],
+    context: Optional[AssetExecutionContext] = None,
+    control_type: Optional[str] = None,
 ) -> None:
     """Ensure DuckDB views exist before processing (for validation/reading existing data).
 
     This is useful when views are needed for validation queries that reference existing data.
 
     Args:
-        context: Dagster execution context
         duckdb: DuckDB resource with S3 access
         version_date: Version date for this run
         create_view_funcs: List of functions to create/update views. Each function signature:
             (duckdb, version_date, context) -> None
+        context: Optional Dagster execution context for logging
+        control_type: Optional control table type. If provided, raises S3ControlTableNotFoundError
+            on failure instead of just logging (useful for sensors).
 
     Note:
-        If views don't exist yet (first run), this will log a warning but not fail.
-        The views will be created after data is saved.
+        If views don't exist yet (first run) and control_type is None, this will log a warning
+        but not fail. The views will be created after data is saved.
+        If control_type is provided, DatabaseQueryError will be converted to
+        S3ControlTableNotFoundError.
+
+    Raises:
+        S3ControlTableNotFoundError: If control_type is provided and views cannot be created
     """
     for create_view_func in create_view_funcs:
         try:
             create_view_func(duckdb, version_date, context)
-        except DatabaseQueryError:
+        except DatabaseQueryError as db_error:
+            if control_type is not None:
+                # Convert DatabaseQueryError to S3ControlTableNotFoundError for sensors
+                raise S3ControlTableNotFoundError(
+                    control_type=control_type, version_date=version_date
+                ) from db_error
             # If views don't exist yet (first run), that's okay - logic will create the data
-            context.log.info("Views don't exist yet - will be created after data is saved")
+            if context:
+                context.log.info("Views don't exist yet - will be created after data is saved")

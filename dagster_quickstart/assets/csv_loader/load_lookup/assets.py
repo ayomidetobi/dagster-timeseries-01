@@ -84,7 +84,7 @@ def load_lookup_tables_from_csv(
     # Ensure views exist before calling logic (for validation/reading existing data)
     lookup_manager = LookupTableManager(duckdb)
     from dagster_quickstart.utils.csv_loader_helpers import ensure_views_exist
-    
+
     ensure_views_exist(
         context=context,
         duckdb=duckdb,

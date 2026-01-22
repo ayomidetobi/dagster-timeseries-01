@@ -39,9 +39,7 @@ from dagster_quickstart.resources import (
 from dagster_quickstart.resources.duckdb_datacacher import duckdb_datacacher
 from dagster_quickstart.utils.database_config import get_database_resource
 
-all_assets = load_assets_from_modules(
-    [calculations, csv_loader, hackernews, bloomberg_ingestion]
-)
+all_assets = load_assets_from_modules([calculations, csv_loader, hackernews, bloomberg_ingestion])
 
 # Load asset checks
 all_asset_checks = load_asset_checks_from_modules([csv_loader])

@@ -252,16 +252,16 @@ def process_csv_to_s3_control_table_meta_series(
     # Read from S3 control table - row_index is computed based on saved order
     from dagster_quickstart.utils.constants import S3_CONTROL_METADATA_SERIES, S3_PARQUET_FILE_NAME
     from dagster_quickstart.utils.s3_helpers import build_full_s3_path
-    
+
     relative_path = build_s3_control_table_path(
         S3_CONTROL_METADATA_SERIES, version_date, S3_PARQUET_FILE_NAME
     )
     full_s3_path = build_full_s3_path(duckdb, relative_path)
-    
+
     # Build results from saved S3 file
     results_query = META_SERIES_RESULTS_QUERY.format(temp_table=f"read_parquet('{full_s3_path}')")
     result = duckdb.execute_query(results_query)
-    
+
     if result is None or result.empty:
         context.log.warning("No results found in saved S3 control table")
         return {}

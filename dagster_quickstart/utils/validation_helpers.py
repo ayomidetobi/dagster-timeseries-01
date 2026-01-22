@@ -102,7 +102,9 @@ def validate_calculation_columns(
         CalculationError: If any required columns are missing
     """
     # Determine how many columns are required based on calculation type
-    required_column_count = CALCULATION_FORMULA_TYPES.get(calculation_type, len(required_series_ids))
+    required_column_count = CALCULATION_FORMULA_TYPES.get(
+        calculation_type, len(required_series_ids)
+    )
 
     # Check that we have at least the required number of columns
     expected_columns = [f"value_{idx}" for idx in range(required_column_count)]
@@ -110,11 +112,11 @@ def validate_calculation_columns(
 
     if missing_columns:
         # Find which parent series are missing data
-        missing_series_indices = [
-            int(col.split("_")[1]) for col in missing_columns
-        ]
+        missing_series_indices = [int(col.split("_")[1]) for col in missing_columns]
         missing_series_ids = [
-            required_series_ids[idx] for idx in missing_series_indices if idx < len(required_series_ids)
+            required_series_ids[idx]
+            for idx in missing_series_indices
+            if idx < len(required_series_ids)
         ]
 
         missing_ids_str = ", ".join(map(str, missing_series_ids))
@@ -126,9 +128,7 @@ def validate_calculation_columns(
             f"All parent series must have data in S3 before {calculation_type} calculation can proceed."
         )
 
-        context.log.error(
-            f"Validation failed for {derived_series_code}: {error_message}"
-        )
+        context.log.error(f"Validation failed for {derived_series_code}: {error_message}")
 
         raise CalculationError(error_message)
 
@@ -140,9 +140,7 @@ def validate_calculation_columns(
             f"All parent series must have data in S3."
         )
 
-        context.log.error(
-            f"Validation failed for {derived_series_code}: {error_message}"
-        )
+        context.log.error(f"Validation failed for {derived_series_code}: {error_message}")
 
         raise CalculationError(error_message)
 
@@ -213,9 +211,7 @@ def validate_calculation_parent_count(
     """
     required_count = CALCULATION_FORMULA_TYPES.get(calc_type)
     if required_count is None:
-        raise CalculationError(
-            f"Unknown calculation type: {calc_type} for {derived_series_code}"
-        )
+        raise CalculationError(f"Unknown calculation type: {calc_type} for {derived_series_code}")
 
     if num_parents < required_count:
         raise CalculationError(
@@ -242,9 +238,7 @@ def validate_parent_dependencies_exist(
         CalculationError: If no parent dependencies found
     """
     if not parent_deps:
-        raise CalculationError(
-            f"No parent dependencies found for {derived_series_code}"
-        )
+        raise CalculationError(f"No parent dependencies found for {derived_series_code}")
 
 
 def validate_parent_series_in_metaseries(

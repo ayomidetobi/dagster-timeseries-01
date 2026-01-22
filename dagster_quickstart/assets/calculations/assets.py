@@ -106,6 +106,4 @@ def calculate_derived_series(
         ],
     )
 
-    calculate_derived_series_logic(
-        context, config, duckdb, target_date, child_series_code
-    )
+    calculate_derived_series_logic(context, config, duckdb, target_date, child_series_code)

@@ -7,6 +7,8 @@ This sensor compares what exists in S3 (via the view) with what Dagster
 already has registered as dynamic partitions and adds only the missing ones.
 """
 
+from typing import cast
+
 from dagster import (
     AssetKey,
     SensorEvaluationContext,
@@ -16,10 +18,8 @@ from dagster import (
 )
 
 from dagster_quickstart.resources import DuckDBResource
-from dagster_quickstart.utils.exceptions import (
-    DatabaseQueryError,
-    S3ControlTableNotFoundError,
-)
+from dagster_quickstart.utils.csv_loader_helpers import ensure_views_exist
+from dagster_quickstart.utils.exceptions import S3ControlTableNotFoundError
 from dagster_quickstart.utils.helpers import get_version_date
 from dagster_quickstart.utils.partitions import META_SERIES_PARTITION
 from database.meta_series import MetaSeriesManager
@@ -51,13 +51,15 @@ def add_meta_series_partitions_sensor(
         meta_manager = MetaSeriesManager(duckdb)
         version_date = get_version_date()
 
-        # Create or update the view - this will fail gracefully if S3 file doesn't exist
+        # Ensure views exist - will raise S3ControlTableNotFoundError if S3 file doesn't exist
         try:
-            meta_manager.create_or_update_view(duckdb, version_date, context=None)
-        except DatabaseQueryError as db_error:
-            raise S3ControlTableNotFoundError(
-                control_type="metaSeries", version_date=version_date
-            ) from db_error
+            ensure_views_exist(
+                duckdb=duckdb,
+                version_date=version_date,
+                create_view_funcs=[meta_manager.create_or_update_view],
+                context=None,
+                control_type="metaSeries",
+            )
         except S3ControlTableNotFoundError as s3_error:
             # Log and skip when S3 control table doesn't exist (expected if CSV hasn't been loaded)
             context.log.info(
@@ -92,9 +94,8 @@ def add_meta_series_partitions_sensor(
             return SkipReason("No valid series codes found after normalization")
 
         # Get existing partitions from Dagster
-        existing_partitions = set(
-            context.instance.get_dynamic_partitions(META_SERIES_PARTITION.name)
-        )
+        partition_name = cast("str", META_SERIES_PARTITION.name)
+        existing_partitions = set[str](context.instance.get_dynamic_partitions(partition_name))
 
         # Find new partitions to add
         partitions_to_add = [code for code in series_codes if code not in existing_partitions]

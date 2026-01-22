@@ -1,6 +1,5 @@
 """General utility helper functions."""
 
-from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
 
 from dagster_quickstart.utils.datetime_utils import utc_now

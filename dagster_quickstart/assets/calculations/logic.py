@@ -5,9 +5,6 @@ from typing import List
 
 from dagster import AssetExecutionContext
 
-from database.dependency import DependencyManager
-from database.meta_series import MetaSeriesManager
-
 from dagster_quickstart.resources import DuckDBResource
 from dagster_quickstart.utils.duckdb_helpers import (
     build_pivot_columns,
@@ -25,6 +22,8 @@ from dagster_quickstart.utils.validation_helpers import (
     validate_parent_dependencies_exist,
     validate_parent_series_in_metaseries,
 )
+from database.dependency import DependencyManager
+from database.meta_series import MetaSeriesManager
 
 from .config import CalculationConfig
 
@@ -50,10 +49,10 @@ def _build_calculation_sql_query(
     """
     # Build UNION ALL query for all parent data
     union_query = " UNION ALL ".join(union_parts)
-    
+
     # Build pivot columns using conditional aggregation
     pivot_select = build_pivot_columns(input_series_ids)
-    
+
     # Build calculation formula based on type
     if calc_type == "SPREAD":
         # spread: entry1 - entry2
@@ -69,10 +68,10 @@ def _build_calculation_sql_query(
         calc_formula = "CASE WHEN value_1 = 0 THEN 0 ELSE value_0 / value_1 END"
     else:
         raise CalculationError(f"Unknown calculation type: {calc_type}")
-    
+
     # Round calculated value to 6 decimal places (matching round_to_six_decimal_places helper)
     rounded_formula = f"ROUND({calc_formula}, 6)"
-    
+
     # Build complete query with pivot and calculation
     sql_query = f"""
     WITH parent_data AS (
@@ -93,7 +92,7 @@ def _build_calculation_sql_query(
     WHERE value IS NOT NULL
     ORDER BY timestamp
     """
-    
+
     return sql_query
 
 
@@ -177,7 +176,7 @@ def calculate_derived_series_logic(
         ORDER BY d.dependency_id
         """
         parent_series_result = duckdb.execute_query(parent_series_query)
-        
+
         # Validate parent series exist in metaSeries
         validate_parent_series_in_metaseries(parent_series_result, derived_series_code)
 
@@ -196,16 +195,18 @@ def calculate_derived_series_logic(
             derived_series_id=derived_series_id,
             target_date=target_date,
         )
-        
-        context.log.debug(f"Executing calculation query for {calc_type}: {calculation_query[:200]}...")
-        
+
+        context.log.debug(
+            f"Executing calculation query for {calc_type}: {calculation_query[:200]}..."
+        )
+
         # Execute query - all calculation happens in DuckDB
         output_df = duckdb.execute_query(calculation_query)
         context.log.info(f"Output DataFrame: {output_df}")
 
         if output_df is None or output_df.empty:
             raise CalculationError("No valid calculated values after processing")
-        
+
         context.log.info(f"Calculated {len(output_df)} rows using DuckDB for {calc_type}")
 
         # Save to S3 using DuckDB macro

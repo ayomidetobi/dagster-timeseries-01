@@ -22,6 +22,7 @@ from dagster_quickstart.utils.helpers import (
 
 if TYPE_CHECKING:
     from database.dependency import DependencyManager
+
     from .config import SeriesDependencyCSVConfig
 
 

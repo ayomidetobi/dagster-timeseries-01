@@ -13,6 +13,7 @@ Features:
 """
 
 import uuid
+from datetime import datetime
 from typing import Any, Optional, Union
 
 import pandas as pd
@@ -23,8 +24,6 @@ from dagster import (
     get_dagster_logger,
     io_manager,
 )
-
-from datetime import datetime
 
 from dagster_quickstart.resources import DuckDBResource
 from dagster_quickstart.utils.constants import (
@@ -220,6 +219,7 @@ class DuckDBIOManager(ConfigurableIOManager):
             try:
                 # Try to parse if it's a string
                 from dagster_quickstart.utils.datetime_utils import parse_timestamp
+
                 parsed = parse_timestamp(partition_date)
                 if parsed:
                     return parsed
@@ -259,7 +259,9 @@ class DuckDBIOManager(ConfigurableIOManager):
         asset_key = context.asset_key
         asset_name = asset_key.path[-1] if asset_key.path else "unknown"
         asset_group = asset_key.path[-2] if len(asset_key.path) >= 2 else "default"
-        return f"{self.s3_base_path}/{asset_group}/{asset_name}.{S3_PARQUET_FILE_NAME.split('.')[-1]}"
+        return (
+            f"{self.s3_base_path}/{asset_group}/{asset_name}.{S3_PARQUET_FILE_NAME.split('.')[-1]}"
+        )
 
     def _convert_to_dataframe(self, obj: Any, context: OutputContext) -> pd.DataFrame:
         """Convert input object to pandas DataFrame.

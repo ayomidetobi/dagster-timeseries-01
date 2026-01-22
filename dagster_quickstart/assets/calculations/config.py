@@ -12,5 +12,9 @@ class CalculationConfig(Config):
     so it's no longer needed in config.
     """
 
-    formula: str = ""  # Optional formula override (usually determined from calc_type in dependencies)
-    input_series_codes: List[str] = []  # List of input series codes (optional, usually from dependencies)
+    formula: str = (
+        ""  # Optional formula override (usually determined from calc_type in dependencies)
+    )
+    input_series_codes: List[
+        str
+    ] = []  # List of input series codes (optional, usually from dependencies)

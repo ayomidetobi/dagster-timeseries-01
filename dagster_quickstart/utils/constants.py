@@ -132,9 +132,9 @@ CALCULATION_TYPES: Dict[str, str] = {
 # Used for derived series calculations (SPREAD, FLY, BOX, RATIO)
 CALCULATION_FORMULA_TYPES: Dict[str, int] = {
     "SPREAD": 2,  # Requires 2 parent series
-    "FLY": 3,     # Requires 3 parent series
-    "BOX": 4,     # Requires 4 parent series
-    "RATIO": 2,   # Requires 2 parent series
+    "FLY": 3,  # Requires 3 parent series
+    "BOX": 4,  # Requires 4 parent series
+    "RATIO": 2,  # Requires 2 parent series
 }
 
 # Default calculation values

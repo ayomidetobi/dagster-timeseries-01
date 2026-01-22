@@ -11,11 +11,11 @@ from dagster import AssetExecutionContext
 
 from dagster_quickstart.resources import DuckDBResource
 from dagster_quickstart.utils.constants import S3_CONTROL_DEPENDENCY, S3_PARQUET_FILE_NAME
-from dagster_quickstart.utils.exceptions import DatabaseQueryError
 from dagster_quickstart.utils.duckdb_helpers import (
     build_dependency_view_sql,
     create_or_update_duckdb_view,
 )
+from dagster_quickstart.utils.exceptions import DatabaseQueryError
 from dagster_quickstart.utils.helpers import (
     build_full_s3_path,
     build_s3_control_table_path,
@@ -217,7 +217,6 @@ class DependencyManager:
                 context.log.error(error_msg)
             raise DatabaseQueryError(error_msg) from e
 
-
     def create_or_update_view(
         self,
         duckdb: DuckDBResource,
@@ -262,5 +261,3 @@ class DependencyManager:
                 context.log.info(
                     f"Created/updated {DEPENDENCY_TABLE} view pointing to S3 control table version {version_date}"
                 )
-
-
