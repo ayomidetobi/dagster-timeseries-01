@@ -1,13 +1,11 @@
 """Calculation logic for derived series."""
 
 from datetime import datetime
+from typing import List
 
-import pandas as pd
 from dagster import AssetExecutionContext
 
 from dagster_quickstart.resources import DuckDBResource
-from dagster_quickstart.resources.duckdb_datacacher import SQL
-from dagster_quickstart.utils.constants import S3_BASE_PATH_VALUE_DATA
 from dagster_quickstart.utils.exceptions import CalculationError, MetaSeriesNotFoundError
 from dagster_quickstart.utils.helpers import (
     build_full_s3_path,
@@ -15,10 +13,90 @@ from dagster_quickstart.utils.helpers import (
     save_value_data_to_s3,
 )
 from dagster_quickstart.utils.summary import AssetSummary
+from dagster_quickstart.utils.validation_helpers import (
+    determine_calculation_type,
+    validate_calculation_parent_count,
+    validate_parent_dependencies_exist,
+    validate_parent_series_in_metaseries,
+)
 from database.dependency import DependencyManager
 from database.meta_series import MetaSeriesManager
 
 from .config import CalculationConfig
+
+
+def _build_calculation_sql_query(
+    union_parts: List[str],
+    input_series_ids: List[int],
+    calc_type: str,
+    derived_series_id: int,
+    target_date: datetime,
+) -> str:
+    """Build SQL query to perform calculation entirely in DuckDB.
+
+    Args:
+        union_parts: List of SQL SELECT statements for each parent series
+        input_series_ids: List of parent series IDs in order
+        calc_type: Calculation type (SPREAD, FLY, BOX, RATIO)
+        derived_series_id: Derived series ID
+        target_date: Target date for filtering
+
+    Returns:
+        Complete SQL query string that performs pivot and calculation
+    """
+    # Build UNION ALL query for all parent data
+    union_query = " UNION ALL ".join(union_parts)
+    
+    # Build pivot columns using conditional aggregation
+    pivot_columns = []
+    for idx, parent_id in enumerate(input_series_ids):
+        pivot_columns.append(
+            f"MAX(CASE WHEN parent_series_id = {parent_id} THEN value END) AS value_{idx}"
+        )
+    
+    pivot_select = ", ".join(pivot_columns)
+    
+    # Build calculation formula based on type
+    if calc_type == "SPREAD":
+        # spread: entry1 - entry2
+        calc_formula = "value_0 - value_1"
+    elif calc_type == "FLY":
+        # fly: 2*entry1 - entry2 - entry3
+        calc_formula = "2 * value_0 - value_1 - value_2"
+    elif calc_type == "BOX":
+        # box: (entry1 - entry2) - (entry3 - entry4)
+        calc_formula = "(value_0 - value_1) - (value_2 - value_3)"
+    elif calc_type == "RATIO":
+        # ratio: entry1 / entry2 (handle division by zero with NULLIF)
+        calc_formula = "CASE WHEN value_1 = 0 THEN 0 ELSE value_0 / value_1 END"
+    else:
+        raise CalculationError(f"Unknown calculation type: {calc_type}")
+    
+    # Round calculated value to 6 decimal places (matching round_to_six_decimal_places helper)
+    rounded_formula = f"ROUND({calc_formula}, 6)"
+    
+    # Build complete query with pivot and calculation
+    sql_query = f"""
+    WITH parent_data AS (
+        {union_query}
+    ),
+    pivoted_data AS (
+        SELECT 
+            timestamp,
+            {pivot_select}
+        FROM parent_data
+        GROUP BY timestamp
+    )
+    SELECT 
+        {derived_series_id} AS series_id,
+        timestamp,
+        {rounded_formula} AS value
+    FROM pivoted_data
+    WHERE value IS NOT NULL
+    ORDER BY timestamp
+    """
+    
+    return sql_query
 
 
 def calculate_derived_series_logic(
@@ -74,41 +152,15 @@ def calculate_derived_series_logic(
     parent_deps = dep_manager.get_parent_dependencies(derived_series_id)
     parent_deps.sort(key=lambda x: x.get("dependency_id", 0))
 
-    if not parent_deps:
-        raise CalculationError(f"No parent dependencies found for {derived_series_code}")
+    # Validate parent dependencies exist
+    validate_parent_dependencies_exist(parent_deps, derived_series_code)
 
-    # Determine calculation type from calc_type in dependency or config
-    calc_type = None
-    if parent_deps and "calc_type" in parent_deps[0]:
-        calc_type = parent_deps[0]["calc_type"]
-    elif config.formula:
-        # Try to infer from formula string
-        formula_upper = config.formula.upper()
-        if "SPREAD" in formula_upper:
-            calc_type = "SPREAD"
-        elif "FLY" in formula_upper:
-            calc_type = "FLY"
-        elif "BOX" in formula_upper:
-            calc_type = "BOX"
-        elif "RATIO" in formula_upper:
-            calc_type = "RATIO"
+    # Determine calculation type from dependencies or config
+    calc_type = determine_calculation_type(parent_deps, config.formula, derived_series_code)
 
-    if not calc_type:
-        raise CalculationError(
-            f"Could not determine calculation type for {derived_series_code}. "
-            f"Set calc_type in dependencies or formula in config."
-        )
-
-    # Validate number of parents based on calc type
+    # Validate number of parents matches calculation type requirements
     num_parents = len(parent_deps)
-    if calc_type == "SPREAD" and num_parents < 2:
-        raise CalculationError(f"SPREAD calculation requires at least 2 parent series, got {num_parents}")
-    elif calc_type == "FLY" and num_parents < 3:
-        raise CalculationError(f"FLY calculation requires at least 3 parent series, got {num_parents}")
-    elif calc_type == "BOX" and num_parents < 4:
-        raise CalculationError(f"BOX calculation requires at least 4 parent series, got {num_parents}")
-    elif calc_type == "RATIO" and num_parents < 2:
-        raise CalculationError(f"RATIO calculation requires at least 2 parent series, got {num_parents}")
+    validate_calculation_parent_count(calc_type, num_parents, derived_series_code, context)
 
     # Get input series IDs for metadata
     input_series_ids = [dep["parent_series_id"] for dep in parent_deps]
@@ -128,125 +180,52 @@ def calculate_derived_series_logic(
         """
         parent_series_result = duckdb.execute_query(parent_series_query)
         
-        if parent_series_result is None or parent_series_result.empty:
-            raise CalculationError("No parent series found in metaSeries for dependencies")
+        # Validate parent series exist in metaSeries
+        validate_parent_series_in_metaseries(parent_series_result, derived_series_code)
 
-        # Build UNION ALL query to load all parent data in one query
+        # Build UNION ALL query to load parent data for target date only
         union_parts = []
-        parent_series_map = {}  # Map parent_series_id to index for column naming
         
-        for idx, row in parent_series_result.iterrows():
+        for _, row in parent_series_result.iterrows():
             parent_series_id = row["parent_series_id"]
             parent_series_code = row["parent_series_code"]
-            parent_series_map[parent_series_id] = idx
             
-            # Build S3 path pattern to load all partitions for this series_code
-            # Path structure: value-data/series_code={series_code}/date=*/data.parquet
-            relative_path_pattern = f"{S3_BASE_PATH_VALUE_DATA}/series_code={parent_series_code}/date=*/data.parquet"
+            # Build S3 path for specific target date partition
+            relative_path = build_s3_value_data_path(parent_series_code, target_date)
+            full_s3_path = build_full_s3_path(duckdb, relative_path)
             
-            if SQL is not None:
-                # Use SQL class for S3 path resolution with glob pattern
-                union_parts.append(f"""
-                    SELECT 
-                        timestamp, 
-                        value,
-                        {parent_series_id} as parent_series_id
-                    FROM read_parquet('$file_path')
-                    WHERE timestamp <= $target_date
-                """)
-            else:
-                # Fallback: build full S3 path and query
-                full_s3_path = build_full_s3_path(duckdb, relative_path_pattern)
-                union_parts.append(f"""
-                    SELECT 
-                        timestamp, 
-                        value,
-                        {parent_series_id} as parent_series_id
-                    FROM read_parquet('{full_s3_path}')
-                    WHERE timestamp <= '{target_date.isoformat()}'
-                """)
+            # Load data for target date only (filter to target date or earlier)
+            union_parts.append(f"""
+                SELECT 
+                    timestamp, 
+                    value,
+                    {parent_series_id} as parent_series_id
+                FROM read_parquet('{full_s3_path}')
+                WHERE timestamp <= '{target_date.isoformat()}'
+            """)
         
         if not union_parts:
             raise CalculationError("No parent series data paths to load")
 
-        # Combine all UNION parts
-        union_query = " UNION ALL ".join(union_parts)
-        union_query += " ORDER BY timestamp"
-        
-        # Execute the combined query
-        if SQL is not None:
-            # Build SQL object with bindings for all file paths
-            # Note: We need to handle multiple file_path bindings
-            # For now, use execute_query with the resolved query
-            # Get all file paths
-            file_paths = [
-                f"{S3_BASE_PATH_VALUE_DATA}/series_code={row['parent_series_code']}/date=*/data.parquet"
-                for _, row in parent_series_result.iterrows()
-            ]
-            # Replace $file_path and $target_date in union_query
-            resolved_query = union_query.replace("$target_date", f"'{target_date.isoformat()}'")
-            # For multiple file paths, we need to replace each occurrence
-            # Since we have one per UNION part, replace them sequentially
-            for idx, file_path in enumerate(file_paths):
-                if SQL is not None:
-                    full_s3_path = build_full_s3_path(duckdb, file_path)
-                    resolved_query = resolved_query.replace("read_parquet('$file_path')", f"read_parquet('{full_s3_path}')", 1)
-            
-            all_parent_data = duckdb.execute_query(resolved_query)
-        else:
-            all_parent_data = duckdb.execute_query(union_query)
-
-        if all_parent_data is None or all_parent_data.empty:
-            raise CalculationError("No parent data found for calculation")
-
-        # Pivot the data: group by timestamp and create columns for each parent
-        merged = all_parent_data.pivot_table(
-            index="timestamp",
-            columns="parent_series_id",
-            values="value",
-            aggfunc="first"
+        # Build and execute complete SQL query that performs pivot and calculation in DuckDB
+        calculation_query = _build_calculation_sql_query(
+            union_parts=union_parts,
+            input_series_ids=input_series_ids,
+            calc_type=calc_type,
+            derived_series_id=derived_series_id,
+            target_date=target_date,
         )
         
-        # Rename columns to value_0, value_1, etc. based on parent_series_id order
-        column_mapping = {}
-        for idx, parent_id in enumerate(input_series_ids):
-            if parent_id in merged.columns:
-                column_mapping[parent_id] = f"value_{idx}"
+        context.log.debug(f"Executing calculation query for {calc_type}: {calculation_query[:200]}...")
         
-        merged = merged.rename(columns=column_mapping)
-        merged = merged.reset_index()
+        # Execute query - all calculation happens in DuckDB
+        output_df = duckdb.execute_query(calculation_query)
+        context.log.info(f"Output DataFrame: {output_df}")
 
-        # Calculate based on formula type
-        if calc_type == "SPREAD":
-            # spread: entry1 - entry2
-            merged["value"] = merged["value_0"] - merged["value_1"]
-        elif calc_type == "FLY":
-            # fly: 2*entry1 - entry2 - entry3
-            merged["value"] = 2 * merged["value_0"] - merged["value_1"] - merged["value_2"]
-        elif calc_type == "BOX":
-            # box: (entry1 - entry2) - (entry3 - entry4)
-            merged["value"] = (merged["value_0"] - merged["value_1"]) - (merged["value_2"] - merged["value_3"])
-        elif calc_type == "RATIO":
-            # ratio: entry1 / entry2 (handle division by zero)
-            merged["value"] = merged["value_0"] / merged["value_1"].replace(0, pd.NA)
-            merged["value"] = merged["value"].fillna(0)  # Replace NaN with 0 for division by zero
-        else:
-            raise CalculationError(f"Unknown calculation type: {calc_type}")
-
-        # Prepare output DataFrame
-        output_df = pd.DataFrame(
-            {
-                "series_id": [derived_series_id] * len(merged),
-                "timestamp": merged["timestamp"],
-                "value": merged["value"],
-            }
-        )
-
-        # Remove rows with null values
-        output_df = output_df.dropna(subset=["value"])
-
-        if len(output_df) == 0:
+        if output_df is None or output_df.empty:
             raise CalculationError("No valid calculated values after processing")
+        
+        context.log.info(f"Calculated {len(output_df)} rows using DuckDB for {calc_type}")
 
         # Save to S3 using DuckDB macro
         relative_path = build_s3_value_data_path(derived_series_code, target_date)
@@ -273,6 +252,7 @@ def calculate_derived_series_logic(
                 "derived_series_id": derived_series_id,
                 "derived_series_code": derived_series_code,
                 "parameters": formula,
+                "result_df": output_df.to_dict("records"),
             },
         )
         summary.add_to_context(context)

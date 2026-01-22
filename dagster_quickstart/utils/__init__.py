@@ -33,12 +33,9 @@ from dagster_quickstart.utils.exceptions import (
 )
 from dagster_quickstart.utils.helpers import (
     check_existing_value_data_in_s3,
-    create_calculation_log,
     create_ingestion_result_dict,
     load_series_data_from_duckdb,
     process_time_series_data_points,
-    update_calculation_log_on_error,
-    update_calculation_log_on_success,
 )
 from dagster_quickstart.utils.summary import AssetSummary
 from dagster_quickstart.utils.summary.csv_loader import add_csv_loader_summary_metadata
@@ -79,9 +76,6 @@ __all__ = [
     "QUERY_LIMIT_MAX",
     # Helpers
     "load_series_data_from_duckdb",
-    "create_calculation_log",
-    "update_calculation_log_on_success",
-    "update_calculation_log_on_error",
     "check_existing_value_data_in_s3",
     "create_ingestion_result_dict",
     "process_time_series_data_points",

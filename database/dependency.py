@@ -5,21 +5,18 @@ DuckDB views are created over S3 control tables for querying. This manager provi
 CRUD operations for dependency data via DuckDB views and S3 control tables.
 """
 
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from dagster import AssetExecutionContext
 
 from dagster_quickstart.resources import DuckDBResource
 from dagster_quickstart.utils.constants import S3_CONTROL_DEPENDENCY, S3_PARQUET_FILE_NAME
-from dagster_quickstart.utils.datetime_utils import utc_now_metadata
 from dagster_quickstart.utils.exceptions import DatabaseQueryError
 from dagster_quickstart.utils.helpers import (
     build_full_s3_path,
     build_s3_control_table_path,
     create_or_update_duckdb_view,
 )
-from database.models import CalculationLogBase, CalculationStatus
 from database.utils import DatabaseResource, query_to_dict, query_to_dict_list
 
 # Constants
@@ -345,107 +342,3 @@ class DependencyManager:
                 )
 
 
-class CalculationLogManager:
-    """Manager for calculation log operations."""
-
-    def __init__(self, database: DatabaseResource):
-        """Initialize with database resource (DuckDB).
-
-        Args:
-            database: Database resource instance (DuckDBResource)
-        """
-        self.database = database
-
-    def create_calculation_log(self, calculation: CalculationLogBase) -> int:
-        """Create a new calculation log entry."""
-        # Get next calculation_id
-        result = self.database.execute_query("SELECT max(calculation_id) FROM calculationLog")
-        # Handle DuckDB result format
-        if hasattr(result, "iloc") and not result.empty:
-            max_id = result.iloc[0, 0]
-            next_id = (max_id + 1) if max_id is not None else 1
-        else:
-            next_id = 1
-
-        # Use DuckDB-compatible SQL syntax
-        now = utc_now_metadata()
-
-        query = """
-        INSERT INTO calculationLog (
-            calculation_id, series_id, calculation_type, status,
-            input_series_ids, parameters, formula, rows_processed, error_message, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """
-
-        self.database.execute_command(
-            query,
-            parameters=[
-                next_id,
-                calculation.series_id,
-                calculation.calculation_type,
-                str(calculation.status.value),
-                calculation.input_series_ids or [],  # DuckDB accepts Python lists as arrays
-                calculation.parameters or "",
-                calculation.formula or "",
-                calculation.rows_processed or 0,
-                calculation.error_message or "",
-                now,
-            ],
-        )
-
-        return next_id
-
-    def update_calculation_log(
-        self,
-        calculation_id: int,
-        status: CalculationStatus,
-        execution_end: Optional[datetime] = None,
-        rows_processed: Optional[int] = None,
-        error_message: Optional[str] = None,
-    ) -> None:
-        """Update a calculation log entry."""
-        # Build update query dynamically based on what's provided
-        updates = ["status = ?"]
-        params = [str(status.value)]
-
-        if rows_processed is not None:
-            updates.append("rows_processed = ?")
-            params.append(rows_processed)
-
-        if error_message is not None:
-            updates.append("error_message = ?")
-            params.append(error_message)
-
-        # DuckDB uses standard UPDATE syntax
-        query = f"""
-        UPDATE calculationLog
-        SET {', '.join(updates)}
-        WHERE calculation_id = ?
-        """
-        params.append(calculation_id)
-
-        self.database.execute_command(query, parameters=params)
-
-    def get_calculation_logs(
-        self,
-        series_id: Optional[int] = None,
-        status: Optional[CalculationStatus] = None,
-        limit: int = 100,
-    ) -> List[Dict[str, Any]]:
-        """Get calculation logs with optional filters."""
-        query = "SELECT * FROM calculationLog WHERE 1=1"
-        params = []
-
-        if series_id:
-            query += " AND series_id = ?"
-            params.append(series_id)
-
-        if status:
-            query += " AND status = ?"
-            params.append(str(status.value))
-
-        query += " ORDER BY created_at DESC LIMIT ?"
-        params.append(limit)
-
-        result = self.database.execute_query(query, parameters=params)
-        return query_to_dict_list(result)

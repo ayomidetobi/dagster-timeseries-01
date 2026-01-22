@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 from dagster import AssetExecutionContext, get_dagster_logger
@@ -14,15 +14,10 @@ from dagster_quickstart.resources.duckdb_datacacher import SQL, join_s3
 from dagster_quickstart.utils.constants import (
     SQL_FILE_PATH_PLACEHOLDER,
 )
-from dagster_quickstart.utils.datetime_utils import UTC
 from dagster_quickstart.utils.exceptions import (
     CSVValidationError,
     DatabaseQueryError,
 )
-from database.models import CalculationLogBase, CalculationStatus
-
-if TYPE_CHECKING:
-    from database.dependency import CalculationLogManager
 
 logger = get_dagster_logger()
 
@@ -89,78 +84,6 @@ def load_series_data_from_duckdb(duckdb: DuckDBResource, series_id: int) -> Opti
         # File doesn't exist, return None
         pass
     return None
-
-
-def create_calculation_log(
-    calc_manager: "CalculationLogManager",  # type: ignore[name-defined]
-    series_id: int,
-    calculation_type: str,
-    formula: str,
-    input_series_ids: List[int],
-    parameters: Optional[str] = None,
-) -> int:
-    """Create a calculation log entry.
-
-    Args:
-        calc_manager: CalculationLogManager instance
-        series_id: Series ID being calculated
-        calculation_type: Type of calculation (e.g., "SMA", "WEIGHTED_COMPOSITE")
-        formula: Calculation formula
-        input_series_ids: List of input series IDs
-        parameters: Optional parameters string
-
-    Returns:
-        Calculation log ID
-    """
-    calc_log = CalculationLogBase(
-        series_id=series_id,
-        calculation_type=calculation_type,
-        status=CalculationStatus.RUNNING,
-        input_series_ids=input_series_ids,
-        parameters=parameters or formula,
-        formula=formula,
-        execution_start=datetime.now(UTC),  # Not stored in DB, but required by model
-        execution_end=None,
-    )
-    return calc_manager.create_calculation_log(calc_log)
-
-
-def update_calculation_log_on_success(
-    calc_manager: "CalculationLogManager",  # type: ignore[name-defined]
-    calculation_id: int,
-    rows_processed: int,
-) -> None:
-    """Update calculation log with success status.
-
-    Args:
-        calc_manager: CalculationLogManager instance
-        calculation_id: Calculation log ID
-        rows_processed: Number of rows processed
-    """
-    calc_manager.update_calculation_log(
-        calculation_id=calculation_id,
-        status=CalculationStatus.COMPLETED,
-        rows_processed=rows_processed,
-    )
-
-
-def update_calculation_log_on_error(
-    calc_manager: "CalculationLogManager",  # type: ignore[name-defined]
-    calculation_id: int,
-    error_message: str,
-) -> None:
-    """Update calculation log with error status.
-
-    Args:
-        calc_manager: CalculationLogManager instance
-        calculation_id: Calculation log ID
-        error_message: Error message to log
-    """
-    calc_manager.update_calculation_log(
-        calculation_id=calculation_id,
-        status=CalculationStatus.FAILED,
-        error_message=error_message,
-    )
 
 
 def create_sql_query_with_file_path(query_template: str, file_path: str, **kwargs: Any) -> Any:
