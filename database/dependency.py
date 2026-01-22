@@ -12,10 +12,13 @@ from dagster import AssetExecutionContext
 from dagster_quickstart.resources import DuckDBResource
 from dagster_quickstart.utils.constants import S3_CONTROL_DEPENDENCY, S3_PARQUET_FILE_NAME
 from dagster_quickstart.utils.exceptions import DatabaseQueryError
+from dagster_quickstart.utils.duckdb_helpers import (
+    build_dependency_view_sql,
+    create_or_update_duckdb_view,
+)
 from dagster_quickstart.utils.helpers import (
     build_full_s3_path,
     build_s3_control_table_path,
-    create_or_update_duckdb_view,
 )
 from database.utils import DatabaseResource, query_to_dict, query_to_dict_list
 
@@ -214,87 +217,6 @@ class DependencyManager:
                 context.log.error(error_msg)
             raise DatabaseQueryError(error_msg) from e
 
-    def _build_dependency_view_sql(
-        self,
-        duckdb: DuckDBResource,
-        full_s3_path: str,
-        context: Optional[AssetExecutionContext] = None,
-    ) -> str:
-        """Build SQL to create/update dependency view.
-
-        Dynamically builds SELECT columns based on what actually exists in the S3 Parquet file,
-        since CSV files may not have all columns.
-
-        Args:
-            duckdb: DuckDB resource to query S3 Parquet schema.
-            full_s3_path: Full S3 path to control table Parquet file.
-            context: Optional Dagster context for logging.
-
-        Returns:
-            SQL CREATE OR REPLACE VIEW statement.
-
-        Raises:
-            DatabaseQueryError: If schema reading fails.
-        """
-        from database.ddl import CREATE_VIEW_FROM_S3_TEMPLATE
-
-        # Get actual columns from S3 Parquet file
-        try:
-            schema_query = f"SELECT * FROM read_parquet('{full_s3_path}') LIMIT 0"
-            schema_result = duckdb.execute_query(schema_query)
-
-            if schema_result is None:
-                raise DatabaseQueryError(
-                    f"Could not read schema from S3 Parquet file: {full_s3_path}"
-                )
-
-            # Get column names from the empty result (schema is preserved)
-            available_columns = schema_result.columns.tolist()
-
-            if not available_columns:
-                raise DatabaseQueryError(f"No columns found in S3 Parquet file: {full_s3_path}")
-
-        except Exception as e:
-            error_msg = f"Error reading schema from S3 Parquet file {full_s3_path}: {e}"
-            if context:
-                context.log.error(error_msg)
-            raise DatabaseQueryError(error_msg) from e
-
-        # Build select columns dynamically - always include dependency_id (computed)
-        # Expected columns: dependency_id, parent_series_id, child_series_id, weight, formula, calc_type
-        select_parts = ["row_number() OVER (ORDER BY parent_series_id, child_series_id) AS dependency_id"]
-
-        # Expected columns in order
-        expected_columns = [
-            "parent_series_id",
-            "child_series_id",
-            "weight",
-            "formula",
-            "calc_type",
-        ]
-
-        # Add columns that exist in the S3 file, in the expected order
-        for col in expected_columns:
-            if col in available_columns:
-                select_parts.append(col)
-
-        # Add any other columns that might exist but aren't in expected list
-        for col in available_columns:
-            if col not in expected_columns and col != "dependency_id":
-                select_parts.append(col)
-
-        select_columns = ",\n        ".join(select_parts)
-
-        where_clause = "WHERE parent_series_id IS NOT NULL AND child_series_id IS NOT NULL"
-
-        # Use generic template
-        return CREATE_VIEW_FROM_S3_TEMPLATE.format(
-            view_name=DEPENDENCY_TABLE,
-            full_s3_path=full_s3_path,
-            select_columns=select_columns,
-            where_clause=where_clause,
-            order_by_column="parent_series_id, child_series_id",
-        )
 
     def create_or_update_view(
         self,
@@ -317,7 +239,7 @@ class DependencyManager:
         )
         full_s3_path = build_full_s3_path(duckdb, relative_path)
 
-        view_sql = self._build_dependency_view_sql(duckdb, full_s3_path, context)
+        view_sql = build_dependency_view_sql(duckdb, full_s3_path, context)
 
         create_or_update_duckdb_view(
             duckdb=duckdb,

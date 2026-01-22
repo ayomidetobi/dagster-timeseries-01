@@ -376,6 +376,8 @@ class DuckDBDataCacher:
 
         df = result.df()
         return None if df.empty else df
+    
+    
 
     # ------------------------------------------------------------------
     # STALENESS CHECK

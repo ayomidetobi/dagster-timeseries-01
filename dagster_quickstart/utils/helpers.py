@@ -23,10 +23,15 @@ from dagster_quickstart.utils.data_processing_helpers import (
 
 # DuckDB helpers
 from dagster_quickstart.utils.duckdb_helpers import (
+    build_dependency_view_sql,
+    build_lookup_table_view_sql,
+    build_meta_series_view_sql,
     build_pivot_columns,
+    build_union_all_query_for_lookup_tables,
     build_union_query_for_parents,
     create_or_update_duckdb_view,
     create_sql_query_with_file_path,
+    create_temp_table_from_query,
     load_csv_to_temp_table,
     load_series_data_from_duckdb,
     unregister_temp_table,
@@ -54,15 +59,20 @@ from dagster_quickstart.utils.validation_helpers import (
 )
 
 __all__ = [
+    "build_dependency_view_sql",
     "build_full_s3_path",
+    "build_lookup_table_view_sql",
+    "build_meta_series_view_sql",
     "build_pivot_columns",
     "build_s3_control_table_path",
     "build_s3_value_data_path",
+    "build_union_all_query_for_lookup_tables",
     "build_union_query_for_parents",
     "check_existing_value_data_in_s3",
     "create_ingestion_result_dict",
     "create_or_update_duckdb_view",
     "create_sql_query_with_file_path",
+    "create_temp_table_from_query",
     "ensure_views_exist",
     "get_version_date",
     "load_csv_to_temp_table",

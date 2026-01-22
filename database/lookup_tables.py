@@ -22,11 +22,16 @@ from dagster_quickstart.utils.constants import (
 from dagster_quickstart.utils.exceptions import (
     DatabaseQueryError,  # noqa: F401  # Used in docstrings
 )
+from dagster_quickstart.utils.duckdb_helpers import (
+    build_lookup_table_view_sql,
+    build_union_all_query_for_lookup_tables,
+    create_or_update_duckdb_view,
+    create_temp_table_from_query,
+    unregister_temp_table,
+)
 from dagster_quickstart.utils.helpers import (
     build_full_s3_path,
     build_s3_control_table_path,
-    create_or_update_duckdb_view,
-    unregister_temp_table,
     write_to_s3_control_table,
 )
 from database.utils import DatabaseResource, get_by_id, get_by_name
@@ -288,59 +293,6 @@ class LookupTableManager:
 
     # CRUD Operations for S3 Control Tables
 
-    def _build_union_all_query(
-        self, duckdb: DuckDBResource, all_lookup_temp_tables: Dict[str, str]
-    ) -> str:
-        """Build UNION ALL query to combine all lookup tables into canonical format.
-
-        Projects each lookup table into a canonical schema:
-        - lookup_type STRING
-        - code STRING
-        - name STRING
-
-        For code-based lookups: uses code_field and name_field
-        For simple lookups: sets code = name = value
-
-        Args:
-            duckdb: DuckDB resource.
-            all_lookup_temp_tables: Dictionary mapping lookup_type -> temp table name.
-
-        Returns:
-            SQL UNION ALL query string, empty if no valid tables.
-        """
-        from dagster_quickstart.assets.csv_loader.utils.load_data import check_temp_table_has_data
-        from database.ddl import UNION_ALL_SELECT_CODE_BASED, UNION_ALL_SELECT_SIMPLE
-
-        union_parts: List[str] = []
-        for lookup_type, temp_table in all_lookup_temp_tables.items():
-            if not check_temp_table_has_data(duckdb, temp_table):
-                continue
-
-            # Project into canonical format: lookup_type, code, name
-            if lookup_type in CODE_BASED_LOOKUPS:
-                # Code-based lookups have both code_field and name_field
-                code_field, name_field, _ = CODE_BASED_LOOKUPS[lookup_type]
-                union_parts.append(
-                    UNION_ALL_SELECT_CODE_BASED.format(
-                        lookup_type=lookup_type,
-                        code_field=code_field,
-                        name_field=name_field,
-                        temp_table=temp_table,
-                    )
-                )
-            else:
-                # Simple lookups only have a name column
-                # Set code = name = value for canonical format
-                _, name_column = DB_COLUMNS[lookup_type]
-                union_parts.append(
-                    UNION_ALL_SELECT_SIMPLE.format(
-                        lookup_type=lookup_type,
-                        name_column=name_column,
-                        temp_table=temp_table,
-                    )
-                )
-
-        return " UNION ALL ".join(union_parts)
 
     def save_lookup_tables_to_s3(
         self,
@@ -374,7 +326,7 @@ class LookupTableManager:
                 context.log.warning("No lookup data to write")
             return ""
 
-        combined_query = self._build_union_all_query(duckdb, all_lookup_temp_tables)
+        combined_query = build_union_all_query_for_lookup_tables(duckdb, all_lookup_temp_tables)
         if not combined_query:
             if context:
                 context.log.warning("No lookup data to write")
@@ -383,8 +335,7 @@ class LookupTableManager:
         combined_temp_table = f"_temp_combined_lookup_{uuid.uuid4().hex}"
 
         try:
-            create_combined_sql = f"CREATE TEMP TABLE {combined_temp_table} AS {combined_query}"
-            duckdb.execute_command(create_combined_sql)
+            create_temp_table_from_query(duckdb, combined_temp_table, combined_query, context)
 
             count_query = f"SELECT COUNT(*) as cnt FROM {combined_temp_table}"
             count_result = duckdb.execute_query(count_query)
@@ -421,58 +372,6 @@ class LookupTableManager:
         finally:
             unregister_temp_table(duckdb, combined_temp_table, context)
 
-    def _build_lookup_table_view_sql(self, lookup_type: str, full_s3_path: str) -> str:
-        """Build SQL to create/update a lookup table view.
-
-        The S3 control table uses canonical format: lookup_type, code, name
-        This function maps the canonical columns to the expected view column names.
-
-        Args:
-            lookup_type: Type of lookup table.
-            full_s3_path: Full S3 path to control table Parquet file.
-
-        Returns:
-            SQL CREATE OR REPLACE VIEW statement.
-        """
-        from database.ddl import (
-            CREATE_VIEW_FROM_S3_TEMPLATE,
-            LOOKUP_TABLE_VIEW_SELECT_CODE_BASED,
-            LOOKUP_TABLE_VIEW_SELECT_SIMPLE,
-            LOOKUP_TABLE_VIEW_WHERE_CODE_BASED,
-            LOOKUP_TABLE_VIEW_WHERE_SIMPLE,
-        )
-
-        table_name = DB_TABLES[lookup_type]
-        id_column, name_column = DB_COLUMNS[lookup_type]
-
-        if lookup_type in CODE_BASED_LOOKUPS:
-            # Code-based lookups: map canonical 'code' and 'name' to code_field and name_field
-            code_field, name_field, _ = CODE_BASED_LOOKUPS[lookup_type]
-            select_columns = LOOKUP_TABLE_VIEW_SELECT_CODE_BASED.format(
-                id_column=id_column,
-                code_field=code_field,
-                name_field=name_field,
-            )
-            where_clause = LOOKUP_TABLE_VIEW_WHERE_CODE_BASED.format(lookup_type=lookup_type)
-            order_by_column = "code"
-        else:
-            # Simple lookups: map canonical 'name' to name_column
-            # For simple lookups, code = name in the canonical format
-            select_columns = LOOKUP_TABLE_VIEW_SELECT_SIMPLE.format(
-                id_column=id_column,
-                name_column=name_column,
-            )
-            where_clause = LOOKUP_TABLE_VIEW_WHERE_SIMPLE.format(lookup_type=lookup_type)
-            order_by_column = "name"
-
-        # Use generic template
-        return CREATE_VIEW_FROM_S3_TEMPLATE.format(
-            view_name=table_name,
-            full_s3_path=full_s3_path,
-            select_columns=select_columns,
-            where_clause=where_clause,
-            order_by_column=order_by_column,
-        )
 
     def create_or_update_views(
         self,
@@ -497,7 +396,7 @@ class LookupTableManager:
 
         for lookup_type in LOOKUP_TABLE_PROCESSING_ORDER:
             table_name = DB_TABLES[lookup_type]
-            view_sql = self._build_lookup_table_view_sql(lookup_type, full_s3_path)
+            view_sql = build_lookup_table_view_sql(lookup_type, full_s3_path)
 
             create_or_update_duckdb_view(
                 duckdb=duckdb,
