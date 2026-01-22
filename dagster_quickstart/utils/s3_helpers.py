@@ -7,12 +7,19 @@ from dagster import AssetExecutionContext
 
 from dagster_quickstart.resources import DuckDBResource
 from dagster_quickstart.resources.duckdb_datacacher import join_s3
-from dagster_quickstart.utils.constants import S3_BASE_PATH_CONTROL, S3_BASE_PATH_VALUE_DATA
+from dagster_quickstart.utils.constants import (
+    S3_BASE_PATH_CONTROL,
+    S3_BASE_PATH_VALUE_DATA,
+    S3_PARQUET_FILE_NAME,
+    S3_PARTITION_DATE,
+    S3_PARTITION_SERIES_CODE,
+    S3_VERSION_PREFIX,
+)
 from dagster_quickstart.utils.exceptions import DatabaseQueryError
 
 
 def build_s3_control_table_path(
-    control_type: str, version_date: str, filename: str = "data.parquet"
+    control_type: str, version_date: str, filename: str = S3_PARQUET_FILE_NAME
 ) -> str:
     """Build relative S3 path for versioned control table Parquet file.
 
@@ -26,17 +33,17 @@ def build_s3_control_table_path(
     Args:
         control_type: Type of control table ('lookup', 'metadata_series', 'field_map')
         version_date: Version date in YYYY-MM-DD format
-        filename: Parquet filename (default: 'data.parquet')
+        filename: Parquet filename (default: uses S3_PARQUET_FILE_NAME constant)
 
     Returns:
         Relative S3 path (e.g., 'control/lookup/version-2026-01-12/data.parquet')
     """
     # Use 'version-' instead of 'version=' to avoid URL encoding issues with DuckDB httpfs
-    return f"{S3_BASE_PATH_CONTROL}/{control_type}/version-{version_date}/{filename}"
+    return f"{S3_BASE_PATH_CONTROL}/{control_type}/{S3_VERSION_PREFIX}{version_date}/{filename}"
 
 
 def build_s3_value_data_path(
-    series_code: str, partition_date: datetime, filename: str = "data.parquet"
+    series_code: str, partition_date: datetime, filename: str = S3_PARQUET_FILE_NAME
 ) -> str:
     """Build relative S3 path for value data Parquet file.
 
@@ -46,13 +53,13 @@ def build_s3_value_data_path(
     Args:
         series_code: Series code (readable identifier)
         partition_date: Partition date (datetime object)
-        filename: Parquet filename (default: 'data.parquet')
+        filename: Parquet filename (default: uses S3_PARQUET_FILE_NAME constant)
 
     Returns:
         Relative S3 path (e.g., 'value-data/series_code=AAPL_US_EQ/date=2025-12-01/data.parquet')
     """
     date_str = partition_date.strftime("%Y-%m-%d")
-    return f"{S3_BASE_PATH_VALUE_DATA}/series_code={series_code}/date={date_str}/{filename}"
+    return f"{S3_BASE_PATH_VALUE_DATA}/{S3_PARTITION_SERIES_CODE}={series_code}/{S3_PARTITION_DATE}={date_str}/{filename}"
 
 
 def build_full_s3_path(duckdb: DuckDBResource, relative_path: str) -> str:

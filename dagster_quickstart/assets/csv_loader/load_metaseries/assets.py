@@ -20,7 +20,6 @@ from dagster_quickstart.utils.constants import (
     S3_CONTROL_METADATA_SERIES,
     S3_PARQUET_FILE_NAME,
 )
-from dagster_quickstart.utils.exceptions import DatabaseQueryError
 from dagster_quickstart.utils.helpers import (
     build_full_s3_path,
     build_s3_control_table_path,
@@ -76,11 +75,14 @@ def load_meta_series_from_csv(
     meta_manager = MetaSeriesManager(duckdb)
 
     # Ensure views exist before calling logic (for validation/reading existing data)
-    try:
-        meta_manager.create_or_update_view(duckdb, version_date, context=context)
-    except DatabaseQueryError:
-        # If views don't exist yet (first run), that's okay - logic will create the data
-        context.log.info("Meta series views don't exist yet - will be created after data is saved")
+    from dagster_quickstart.utils.csv_loader_helpers import ensure_views_exist
+    
+    ensure_views_exist(
+        context=context,
+        duckdb=duckdb,
+        version_date=version_date,
+        create_view_funcs=[meta_manager.create_or_update_view],
+    )
 
     result_dict, results = load_meta_series_logic(
         context, config, duckdb, version_date, meta_manager

@@ -128,6 +128,15 @@ CALCULATION_TYPES: Dict[str, str] = {
     "COMPOSITE": "COMPOSITE",
 }
 
+# Calculation formula types and their required parent series counts
+# Used for derived series calculations (SPREAD, FLY, BOX, RATIO)
+CALCULATION_FORMULA_TYPES: Dict[str, int] = {
+    "SPREAD": 2,  # Requires 2 parent series
+    "FLY": 3,     # Requires 3 parent series
+    "BOX": 4,     # Requires 4 parent series
+    "RATIO": 2,   # Requires 2 parent series
+}
+
 # Default calculation values
 DEFAULT_SMA_WINDOW: int = 20
 DEFAULT_WEIGHT_DIVISOR: float = 1.0  # For equal weight distribution
@@ -193,6 +202,11 @@ S3_CONTROL_LOOKUP: str = "lookup"
 S3_CONTROL_METADATA_SERIES: str = "metadata_series"
 S3_CONTROL_DEPENDENCY: str = "dependency"
 S3_CONTROL_FIELD_MAP: str = "field_map"
+
+# S3 path partition key prefixes
+S3_PARTITION_SERIES_CODE: str = "series_code"
+S3_PARTITION_DATE: str = "date"
+S3_VERSION_PREFIX: str = "version-"
 
 # SQL query constants
 SQL_FILE_PATH_PLACEHOLDER: str = "$file_path"

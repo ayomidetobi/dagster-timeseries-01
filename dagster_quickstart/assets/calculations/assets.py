@@ -12,7 +12,7 @@ from dagster_quickstart.utils.constants import (
     RETRY_POLICY_DELAY_DEFAULT,
     RETRY_POLICY_MAX_RETRIES_DEFAULT,
 )
-from dagster_quickstart.utils.exceptions import DatabaseQueryError
+from dagster_quickstart.utils.csv_loader_helpers import ensure_views_exist
 from dagster_quickstart.utils.helpers import get_version_date
 from dagster_quickstart.utils.partitions import CALCULATION_PARTITION, get_partition_date
 from database.dependency import DependencyManager
@@ -96,14 +96,15 @@ def calculate_derived_series(
     dep_manager = DependencyManager(duckdb)
 
     # Ensure views exist before calling logic (for querying meta series and dependencies)
-    try:
-        meta_manager.create_or_update_view(duckdb, version_date, context=context)
-        dep_manager.create_or_update_view(duckdb, version_date, context=context)
-    except DatabaseQueryError:
-        # If views don't exist yet, log warning but continue
-        context.log.warning(
-            "Meta series or dependency views don't exist yet - calculation may fail if data not found"
-        )
+    ensure_views_exist(
+        context=context,
+        duckdb=duckdb,
+        version_date=version_date,
+        create_view_funcs=[
+            meta_manager.create_or_update_view,
+            dep_manager.create_or_update_view,
+        ],
+    )
 
     calculate_derived_series_logic(
         context, config, duckdb, target_date, child_series_code

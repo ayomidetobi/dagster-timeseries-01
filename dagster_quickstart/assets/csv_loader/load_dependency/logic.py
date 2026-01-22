@@ -378,7 +378,7 @@ def process_csv_to_s3_control_table_dependencies(
     """Process series dependencies from CSV to S3 control table (versioned, immutable).
 
     Orchestrates the complete data flow:
-    CSV → DuckDB temp table → validation → enrichment (series IDs) → S3 Parquet control table
+    CSV → DuckDB temp table → enrichment (series IDs) → S3 Parquet control table
 
     Args:
         context: Dagster execution context.
@@ -411,9 +411,7 @@ def process_csv_to_s3_control_table_dependencies(
         enriched_table = _enrich_dependencies_with_series_ids(context, duckdb, temp_table)
 
         # Step 4: Write validated and enriched data to S3 control table (versioned, immutable)
-        _save_dependencies_to_s3_control_table(
-            context, duckdb, enriched_table, version_date, dependency_manager
-        )
+        dependency_manager.save_dependencies_to_s3(duckdb, enriched_table, version_date, context)
 
         # Step 5: Build results dictionary (dependency_id -> row_index)
         results = _build_dependency_results(context, duckdb, enriched_table)

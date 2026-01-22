@@ -6,16 +6,9 @@ import pandas as pd
 from dagster import AssetExecutionContext
 
 from dagster_quickstart.resources import DuckDBResource
+from dagster_quickstart.utils.constants import CALCULATION_FORMULA_TYPES
 from dagster_quickstart.utils.exceptions import CalculationError, ReferentialIntegrityError
 from database.referential_integrity import ReferentialIntegrityValidator
-
-# Calculation type constants
-CALCULATION_TYPES = {
-    "SPREAD": 2,  # Requires 2 parent series
-    "FLY": 3,     # Requires 3 parent series
-    "BOX": 4,     # Requires 4 parent series
-    "RATIO": 2,   # Requires 2 parent series
-}
 
 
 def validate_series_metadata(
@@ -109,7 +102,7 @@ def validate_calculation_columns(
         CalculationError: If any required columns are missing
     """
     # Determine how many columns are required based on calculation type
-    required_column_count = CALCULATION_TYPES.get(calculation_type, len(required_series_ids))
+    required_column_count = CALCULATION_FORMULA_TYPES.get(calculation_type, len(required_series_ids))
 
     # Check that we have at least the required number of columns
     expected_columns = [f"value_{idx}" for idx in range(required_column_count)]
@@ -218,7 +211,7 @@ def validate_calculation_parent_count(
     Raises:
         CalculationError: If number of parents is insufficient for calculation type
     """
-    required_count = CALCULATION_TYPES.get(calc_type)
+    required_count = CALCULATION_FORMULA_TYPES.get(calc_type)
     if required_count is None:
         raise CalculationError(
             f"Unknown calculation type: {calc_type} for {derived_series_code}"

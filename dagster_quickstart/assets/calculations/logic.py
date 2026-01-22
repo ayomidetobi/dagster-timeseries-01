@@ -5,10 +5,16 @@ from typing import List
 
 from dagster import AssetExecutionContext
 
+from database.dependency import DependencyManager
+from database.meta_series import MetaSeriesManager
+
 from dagster_quickstart.resources import DuckDBResource
+from dagster_quickstart.utils.duckdb_helpers import (
+    build_pivot_columns,
+    build_union_query_for_parents,
+)
 from dagster_quickstart.utils.exceptions import CalculationError, MetaSeriesNotFoundError
 from dagster_quickstart.utils.helpers import (
-    build_full_s3_path,
     build_s3_value_data_path,
     save_value_data_to_s3,
 )
@@ -19,8 +25,6 @@ from dagster_quickstart.utils.validation_helpers import (
     validate_parent_dependencies_exist,
     validate_parent_series_in_metaseries,
 )
-from database.dependency import DependencyManager
-from database.meta_series import MetaSeriesManager
 
 from .config import CalculationConfig
 
@@ -48,13 +52,7 @@ def _build_calculation_sql_query(
     union_query = " UNION ALL ".join(union_parts)
     
     # Build pivot columns using conditional aggregation
-    pivot_columns = []
-    for idx, parent_id in enumerate(input_series_ids):
-        pivot_columns.append(
-            f"MAX(CASE WHEN parent_series_id = {parent_id} THEN value END) AS value_{idx}"
-        )
-    
-    pivot_select = ", ".join(pivot_columns)
+    pivot_select = build_pivot_columns(input_series_ids)
     
     # Build calculation formula based on type
     if calc_type == "SPREAD":
@@ -184,28 +182,11 @@ def calculate_derived_series_logic(
         validate_parent_series_in_metaseries(parent_series_result, derived_series_code)
 
         # Build UNION ALL query to load parent data for target date only
-        union_parts = []
-        
-        for _, row in parent_series_result.iterrows():
-            parent_series_id = row["parent_series_id"]
-            parent_series_code = row["parent_series_code"]
-            
-            # Build S3 path for specific target date partition
-            relative_path = build_s3_value_data_path(parent_series_code, target_date)
-            full_s3_path = build_full_s3_path(duckdb, relative_path)
-            
-            # Load data for target date only (filter to target date or earlier)
-            union_parts.append(f"""
-                SELECT 
-                    timestamp, 
-                    value,
-                    {parent_series_id} as parent_series_id
-                FROM read_parquet('{full_s3_path}')
-                WHERE timestamp <= '{target_date.isoformat()}'
-            """)
-        
-        if not union_parts:
-            raise CalculationError("No parent series data paths to load")
+        union_parts = build_union_query_for_parents(
+            duckdb=duckdb,
+            parent_series_result=parent_series_result,
+            target_date=target_date,
+        )
 
         # Build and execute complete SQL query that performs pivot and calculation in DuckDB
         calculation_query = _build_calculation_sql_query(

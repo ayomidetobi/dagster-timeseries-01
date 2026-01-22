@@ -19,7 +19,7 @@ from dagster_quickstart.utils.constants import (
     S3_CONTROL_LOOKUP,
     S3_PARQUET_FILE_NAME,
 )
-from dagster_quickstart.utils.exceptions import CSVValidationError, DatabaseQueryError
+from dagster_quickstart.utils.exceptions import CSVValidationError
 from dagster_quickstart.utils.helpers import (
     build_full_s3_path,
     build_s3_control_table_path,
@@ -83,11 +83,14 @@ def load_lookup_tables_from_csv(
 
     # Ensure views exist before calling logic (for validation/reading existing data)
     lookup_manager = LookupTableManager(duckdb)
-    try:
-        lookup_manager.create_or_update_views(duckdb, version_date, context=context)
-    except DatabaseQueryError:
-        # If views don't exist yet (first run), that's okay - logic will create the data
-        context.log.info("Lookup table views don't exist yet - will be created after data is saved")
+    from dagster_quickstart.utils.csv_loader_helpers import ensure_views_exist
+    
+    ensure_views_exist(
+        context=context,
+        duckdb=duckdb,
+        version_date=version_date,
+        create_view_funcs=[lookup_manager.create_or_update_views],
+    )
 
     # Process CSV and save to S3 (logic doesn't create views)
     all_results = process_csv_to_s3_control_table_lookup_tables(

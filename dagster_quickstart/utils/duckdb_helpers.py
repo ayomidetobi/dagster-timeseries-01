@@ -1,6 +1,7 @@
 """DuckDB helper functions for database operations."""
 
-from typing import Any, Optional
+from datetime import datetime
+from typing import Any, List, Optional
 
 import pandas as pd
 from dagster import AssetExecutionContext
@@ -9,23 +10,29 @@ from dagster_quickstart.resources import DuckDBResource
 from dagster_quickstart.resources.duckdb_datacacher import SQL
 from dagster_quickstart.utils.constants import SQL_FILE_PATH_PLACEHOLDER
 from dagster_quickstart.utils.exceptions import CSVValidationError, DatabaseQueryError
-from dagster_quickstart.utils.s3_helpers import build_full_s3_path
+from dagster_quickstart.utils.s3_helpers import (
+    build_full_s3_path,
+    build_s3_value_data_path,
+)
 
 
-def load_series_data_from_duckdb(duckdb: DuckDBResource, series_id: int) -> Optional[pd.DataFrame]:
-    """Load time-series data from S3 Parquet files for a given series_id.
+def load_series_data_from_duckdb(
+    duckdb: DuckDBResource, series_code: str, partition_date: datetime
+) -> Optional[pd.DataFrame]:
+    """Load time-series data from S3 Parquet files for a given series_code and date.
 
     Uses DuckDBResource's load() method with SQL class bindings for S3 path resolution.
 
     Args:
         duckdb: DuckDB resource with S3 access via httpfs
-        series_id: Series ID to load data for
+        series_code: Series code to load data for
+        partition_date: Partition date for the data
 
     Returns:
         DataFrame with timestamp and value columns, or None if no data found
     """
     # Get relative S3 path for this series (relative to bucket)
-    relative_path = f"value-data/series_id={series_id}/data.parquet"
+    relative_path = build_s3_value_data_path(series_code, partition_date)
 
     try:
         # Use DuckDBResource's load() method with SQL class for proper S3 path resolution
@@ -184,3 +191,71 @@ def unregister_temp_table(
     except Exception:
         # Table may already be dropped, ignore
         pass
+
+
+def build_union_query_for_parents(
+    duckdb: DuckDBResource,
+    parent_series_result: pd.DataFrame,
+    target_date: datetime,
+) -> List[str]:
+    """Build UNION ALL query parts for loading parent series data from S3.
+
+    Creates a list of SQL SELECT statements, one for each parent series,
+    that can be combined with UNION ALL to load all parent data in a single query.
+
+    Args:
+        duckdb: DuckDB resource with S3 access
+        parent_series_result: DataFrame with columns parent_series_id and parent_series_code
+        target_date: Target date for filtering data (only data <= target_date is loaded)
+
+    Returns:
+        List of SQL SELECT statement strings, one per parent series
+
+    Raises:
+        DatabaseQueryError: If no parent series data paths can be built
+    """
+    union_parts: List[str] = []
+
+    for _, row in parent_series_result.iterrows():
+        parent_series_id = row["parent_series_id"]
+        parent_series_code = row["parent_series_code"]
+
+        # Build S3 path for specific target date partition
+        relative_path = build_s3_value_data_path(parent_series_code, target_date)
+        full_s3_path = build_full_s3_path(duckdb, relative_path)
+
+        # Load data for target date only (filter to target date or earlier)
+        union_parts.append(f"""
+            SELECT 
+                timestamp, 
+                value,
+                {parent_series_id} as parent_series_id
+            FROM read_parquet('{full_s3_path}')
+            WHERE timestamp <= '{target_date.isoformat()}'
+        """)
+
+    if not union_parts:
+        raise DatabaseQueryError("No parent series data paths to load")
+
+    return union_parts
+
+
+def build_pivot_columns(input_series_ids: List[int]) -> str:
+    """Build pivot columns SQL using conditional aggregation.
+
+    Creates SQL expressions that pivot parent series values into separate columns
+    (value_0, value_1, value_2, etc.) for use in calculations.
+
+    Args:
+        input_series_ids: List of parent series IDs in order
+
+    Returns:
+        Comma-separated string of pivot column expressions
+    """
+    pivot_columns = []
+    for idx, parent_id in enumerate(input_series_ids):
+        pivot_columns.append(
+            f"MAX(CASE WHEN parent_series_id = {parent_id} THEN value END) AS value_{idx}"
+        )
+
+    return ", ".join(pivot_columns)
