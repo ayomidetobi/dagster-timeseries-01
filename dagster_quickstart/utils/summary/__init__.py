@@ -339,9 +339,11 @@ class AssetSummary:
         elif self._asset_type == "calculation":
             # Calculation-specific metadata
             if "calculation_id" in self._asset_metadata:
-                metadata["calculation_id"] = MetadataValue.int(
-                    self._asset_metadata["calculation_id"]
-                )
+                calc_id = self._asset_metadata["calculation_id"]
+                if isinstance(calc_id, int):
+                    metadata["calculation_id"] = MetadataValue.int(calc_id)
+                else:
+                    metadata["calculation_id"] = MetadataValue.text(str(calc_id))
             if "calculation_type" in self._asset_metadata:
                 metadata["calculation_type"] = MetadataValue.text(
                     str(self._asset_metadata["calculation_type"])
@@ -349,13 +351,34 @@ class AssetSummary:
             if "formula" in self._asset_metadata:
                 metadata["formula"] = MetadataValue.text(str(self._asset_metadata["formula"]))
             if "parent_series_count" in self._asset_metadata:
-                metadata["parent_series_count"] = MetadataValue.int(
-                    self._asset_metadata["parent_series_count"]
-                )
+                parent_count = self._asset_metadata["parent_series_count"]
+                if isinstance(parent_count, int):
+                    metadata["parent_series_count"] = MetadataValue.int(parent_count)
+                else:
+                    metadata["parent_series_count"] = MetadataValue.text(str(parent_count))
             if "child_series_count" in self._asset_metadata:
-                metadata["child_series_count"] = MetadataValue.int(
-                    self._asset_metadata["child_series_count"]
-                )
+                child_count = self._asset_metadata["child_series_count"]
+                if isinstance(child_count, int):
+                    metadata["child_series_count"] = MetadataValue.int(child_count)
+                else:
+                    metadata["child_series_count"] = MetadataValue.text(str(child_count))
+            # Add calculation log metadata fields
+            if "status" in self._asset_metadata:
+                metadata["calculation_status"] = MetadataValue.text(str(self._asset_metadata["status"]))
+            if "input_series_ids" in self._asset_metadata:
+                metadata["input_series_ids"] = MetadataValue.json(self._asset_metadata["input_series_ids"])
+            if "derived_series_id" in self._asset_metadata:
+                derived_id = self._asset_metadata["derived_series_id"]
+                if isinstance(derived_id, int):
+                    metadata["derived_series_id"] = MetadataValue.int(derived_id)
+                else:
+                    metadata["derived_series_id"] = MetadataValue.text(str(derived_id))
+            if "derived_series_code" in self._asset_metadata:
+                metadata["derived_series_code"] = MetadataValue.text(str(self._asset_metadata["derived_series_code"]))
+            if "parameters" in self._asset_metadata:
+                metadata["parameters"] = MetadataValue.text(str(self._asset_metadata["parameters"]))
+            if "error_message" in self._asset_metadata:
+                metadata["error_message"] = MetadataValue.text(str(self._asset_metadata["error_message"]))
 
         # Add any remaining metadata that wasn't handled above
         for key, value in self._asset_metadata.items():
@@ -612,6 +635,7 @@ class AssetSummary:
         parent_series_count: Optional[int] = None,
         child_series_count: Optional[int] = None,
         target_date: Optional[datetime] = None,
+        additional_metadata: Optional[Dict[str, Any]] = None,
     ) -> "AssetSummary":
         """Create a calculation summary with specific metadata.
 
@@ -623,6 +647,7 @@ class AssetSummary:
             parent_series_count: Number of parent series (optional)
             child_series_count: Number of child series (optional)
             target_date: Target date for calculation (optional)
+            additional_metadata: Optional dictionary with additional metadata to include
 
         Returns:
             AssetSummary instance configured for calculation
@@ -638,6 +663,8 @@ class AssetSummary:
             asset_metadata["parent_series_count"] = parent_series_count
         if child_series_count is not None:
             asset_metadata["child_series_count"] = child_series_count
+        if additional_metadata:
+            asset_metadata.update(additional_metadata)
 
         return cls(
             total_series=0,

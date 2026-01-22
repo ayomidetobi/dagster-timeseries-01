@@ -19,7 +19,9 @@ from dagster_quickstart.assets import (
     calculations,
     csv_loader,
     hackernews,
-    ingestion,
+)
+from dagster_quickstart.assets.csv_loader.load_dependency.sensor import (
+    add_child_series_partitions_sensor,
 )
 from dagster_quickstart.assets.csv_loader.load_metaseries.sensor import (
     add_meta_series_partitions_sensor,
@@ -38,7 +40,7 @@ from dagster_quickstart.resources.duckdb_datacacher import duckdb_datacacher
 from dagster_quickstart.utils.database_config import get_database_resource
 
 all_assets = load_assets_from_modules(
-    [ingestion, calculations, csv_loader, hackernews, bloomberg_ingestion]
+    [calculations, csv_loader, hackernews, bloomberg_ingestion]
 )
 
 # Load asset checks
@@ -146,6 +148,7 @@ defs = Definitions(
         teams_on_run_failure,
         outlook_email_failure_sensor,
         add_meta_series_partitions_sensor,
+        add_child_series_partitions_sensor,
     ],
     resources=resources,
 )

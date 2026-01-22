@@ -191,6 +191,7 @@ S3_PARQUET_FILE_NAME: str = "data.parquet"
 S3_BASE_PATH_CONTROL: str = "control"
 S3_CONTROL_LOOKUP: str = "lookup"
 S3_CONTROL_METADATA_SERIES: str = "metadata_series"
+S3_CONTROL_DEPENDENCY: str = "dependency"
 S3_CONTROL_FIELD_MAP: str = "field_map"
 
 # SQL query constants

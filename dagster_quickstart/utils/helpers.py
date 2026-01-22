@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import pandas as pd
 from dagster import AssetExecutionContext, get_dagster_logger
@@ -19,8 +19,10 @@ from dagster_quickstart.utils.exceptions import (
     CSVValidationError,
     DatabaseQueryError,
 )
-from database.dependency import CalculationLogManager
 from database.models import CalculationLogBase, CalculationStatus
+
+if TYPE_CHECKING:
+    from database.dependency import CalculationLogManager
 
 logger = get_dagster_logger()
 
@@ -90,7 +92,7 @@ def load_series_data_from_duckdb(duckdb: DuckDBResource, series_id: int) -> Opti
 
 
 def create_calculation_log(
-    calc_manager: CalculationLogManager,
+    calc_manager: "CalculationLogManager",  # type: ignore[name-defined]
     series_id: int,
     calculation_type: str,
     formula: str,
@@ -124,7 +126,7 @@ def create_calculation_log(
 
 
 def update_calculation_log_on_success(
-    calc_manager: CalculationLogManager,
+    calc_manager: "CalculationLogManager",  # type: ignore[name-defined]
     calculation_id: int,
     rows_processed: int,
 ) -> None:
@@ -143,7 +145,7 @@ def update_calculation_log_on_success(
 
 
 def update_calculation_log_on_error(
-    calc_manager: CalculationLogManager,
+    calc_manager: "CalculationLogManager",  # type: ignore[name-defined]
     calculation_id: int,
     error_message: str,
 ) -> None:

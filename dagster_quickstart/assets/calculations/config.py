@@ -6,10 +6,11 @@ from dagster import Config
 
 
 class CalculationConfig(Config):
-    """Configuration for derived series calculation."""
+    """Configuration for derived series calculation.
 
-    derived_series_code: str = (
-        "TECH_COMPOSITE"  # Must match series_code in meta_series.csv, not series_name
-    )
-    formula: str = "parent1 * 0.5 + parent2 * 0.5"  # e.g., "parent1 * 0.6 + parent2 * 0.4"
-    input_series_codes: List[str] = []  # List of input series codes
+    Note: derived_series_code is now automatically discovered from dependencies,
+    so it's no longer needed in config.
+    """
+
+    formula: str = ""  # Optional formula override (usually determined from calc_type in dependencies)
+    input_series_codes: List[str] = []  # List of input series codes (optional, usually from dependencies)
