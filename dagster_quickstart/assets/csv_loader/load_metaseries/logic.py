@@ -23,15 +23,15 @@ from dagster_quickstart.utils.constants import (
     S3_CONTROL_LOOKUP,
     S3_PARQUET_FILE_NAME,
 )
+
 # from dagster_quickstart.utils.exceptions import (
-#     CSVValidationError,  
-#     DatabaseQueryError,  # noqa: F401  # Raised by helper functions
-#     ReferentialIntegrityError,  # noqa: F401  # Raised by validate_referential_integrity_sql
+#     CSVValidationError,
+#     DatabaseQueryError,  # Raised by helper functions
+#     ReferentialIntegrityError,  # Raised by validate_referential_integrity_sql
 # )
 from dagster_quickstart.utils.helpers import (
     build_full_s3_path,
     build_s3_control_table_path,
-    get_version_date,
     load_csv_to_temp_table,
     unregister_temp_table,
     validate_referential_integrity_sql,
@@ -41,7 +41,10 @@ from database.ddl import (
     META_SERIES_VALIDATION_CONDITION,
     META_SERIES_VALIDATION_QUERY,
 )
-from database.meta_series import MetaSeriesManager
+
+if TYPE_CHECKING:
+    from database.meta_series import MetaSeriesManager
+
 
 from ..utils.load_data import get_available_columns
 
@@ -50,6 +53,8 @@ def load_meta_series_logic(
     context: AssetExecutionContext,
     config: "MetaSeriesCSVConfig",  # type: ignore[name-defined]
     duckdb: DuckDBResource,
+    version_date: str,
+    meta_manager: "MetaSeriesManager",
 ) -> Tuple[Dict[str, Any], Dict[str, int]]:
     """Load meta series from CSV file and write to S3 control table.
 
@@ -60,6 +65,8 @@ def load_meta_series_logic(
         context: Dagster execution context.
         config: Meta series CSV configuration.
         duckdb: DuckDB resource.
+        version_date: Version date for this run.
+        meta_manager: MetaSeriesManager instance (initialized in asset).
 
     Returns:
         Tuple of (results dictionary for DataFrame conversion, results dictionary mapping series_code -> row_index).
@@ -69,7 +76,9 @@ def load_meta_series_logic(
     # Process CSV → S3 control table (versioned, immutable)
     # CSV is loaded directly into DuckDB temp table, no pandas involved
     context.log.info("Using CSV → S3 control table flow (versioned, immutable)")
-    results = process_csv_to_s3_control_table_meta_series(context, duckdb, config.csv_path)
+    results = process_csv_to_s3_control_table_meta_series(
+        context, duckdb, config.csv_path, version_date, meta_manager
+    )
 
     # Build results dictionary for DataFrame conversion (done in assets.py if needed)
     result_dict = {
@@ -81,7 +90,10 @@ def load_meta_series_logic(
 
 
 def _build_meta_series_validation_query(
-    temp_table: str, duckdb: DuckDBResource, context: Optional[AssetExecutionContext] = None
+    temp_table: str,
+    duckdb: DuckDBResource,
+    version_date: str,
+    context: Optional[AssetExecutionContext] = None,
 ) -> str:
     """Build SQL query to validate meta series against lookup tables.
 
@@ -101,13 +113,11 @@ def _build_meta_series_validation_query(
     available_columns = get_available_columns(duckdb, temp_table, LOOKUP_TABLE_PROCESSING_ORDER)
 
     # Get the latest lookup table version from S3
-    # Use the current run's version date (lookup tables should be loaded first)
-    version_date = get_version_date()
-    bucket = duckdb.get_bucket()
+    # Use the provided version date (lookup tables should be loaded first)
     relative_path = build_s3_control_table_path(
         S3_CONTROL_LOOKUP, version_date, S3_PARQUET_FILE_NAME
     )
-    full_s3_path = build_full_s3_path(bucket, relative_path)
+    full_s3_path = build_full_s3_path(duckdb, relative_path)
 
     validation_parts: List[str] = []
 
@@ -164,6 +174,7 @@ def _validate_meta_series_against_lookup_tables(
     context: AssetExecutionContext,
     duckdb: DuckDBResource,
     temp_table: str,
+    version_date: str,
 ) -> None:
     """Validate meta series data against lookup tables using SQL.
 
@@ -175,11 +186,14 @@ def _validate_meta_series_against_lookup_tables(
         context: Dagster execution context.
         duckdb: DuckDB resource with S3 access.
         temp_table: Temporary table name with meta series data.
+        version_date: Version date for the lookup table S3 path.
 
     Raises:
         ReferentialIntegrityError: If validation fails.
     """
-    validation_query = _build_meta_series_validation_query(temp_table, duckdb, context)
+    validation_query = _build_meta_series_validation_query(
+        temp_table, duckdb, version_date, context
+    )
     validate_referential_integrity_sql(
         duckdb=duckdb,
         temp_table=temp_table,
@@ -192,6 +206,8 @@ def process_csv_to_s3_control_table_meta_series(
     context: AssetExecutionContext,
     duckdb: DuckDBResource,
     csv_path: str,
+    version_date: str,
+    meta_manager: "MetaSeriesManager",  # type: ignore[name-defined]
 ) -> Dict[str, int]:
     """Process meta series from CSV to S3 control table (versioned, immutable).
 
@@ -202,6 +218,8 @@ def process_csv_to_s3_control_table_meta_series(
         context: Dagster execution context.
         duckdb: DuckDB resource with S3 access.
         csv_path: Path to CSV file.
+        version_date: Version date for this run.
+        meta_manager: MetaSeriesManager instance (initialized in asset).
 
     Returns:
         Dictionary mapping series_code -> row_index (deterministic based on order).
@@ -213,23 +231,18 @@ def process_csv_to_s3_control_table_meta_series(
     """
     context.log.info("Processing meta series from CSV to S3 control table (versioned)")
 
-    # Get version date for this run
-    version_date = get_version_date()
-
     # Step 1: Load CSV directly into DuckDB temp table (no pandas)
     temp_table = load_csv_to_temp_table(duckdb, csv_path, NULL_VALUE_REPRESENTATION, context)
 
     try:
         # Step 2: Validate referential integrity against lookup tables
-        _validate_meta_series_against_lookup_tables(context, duckdb, temp_table)
+        _validate_meta_series_against_lookup_tables(context, duckdb, temp_table, version_date)
 
         # Step 3: Write validated data to S3 control table (versioned, immutable)
-        # Use MetaSeriesManager for CRUD operations
-        meta_manager = MetaSeriesManager(duckdb)
+        # Use MetaSeriesManager for CRUD operations (passed from asset)
         meta_manager.save_meta_series_to_s3(duckdb, temp_table, version_date, context)
 
-        # Step 4: Create/update DuckDB view over S3 control table
-        meta_manager.create_or_update_view(duckdb, version_date, context)
+        # Note: View creation is handled in the asset function, not here
 
         # Step 5: Build results dictionary (series_code -> row_index)
         # Row index is deterministic based on order in CSV (using row_number in SQL)

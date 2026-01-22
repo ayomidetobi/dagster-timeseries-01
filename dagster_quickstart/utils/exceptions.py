@@ -150,3 +150,14 @@ class InvalidLookupReferenceError(ReferentialIntegrityError):
             else:
                 message = f"Invalid {lookup_type} reference: '{lookup_value}'"
         super().__init__(message)
+
+
+class S3ControlTableNotFoundError(DatabaseError):
+    """Raised when an S3 control table file doesn't exist for a given version."""
+
+    def __init__(self, control_type: str, version_date: str, message: str = ""):
+        self.control_type = control_type
+        self.version_date = version_date
+        if not message:
+            message = f"S3 control table '{control_type}' not found for version {version_date}"
+        super().__init__(message)

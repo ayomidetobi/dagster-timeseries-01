@@ -490,11 +490,10 @@ class LookupTableManager:
         Raises:
             DatabaseQueryError: If view creation fails.
         """
-        bucket = duckdb.get_bucket()
         relative_path = build_s3_control_table_path(
             S3_CONTROL_LOOKUP, version_date, S3_PARQUET_FILE_NAME
         )
-        full_s3_path = build_full_s3_path(bucket, relative_path)
+        full_s3_path = build_full_s3_path(duckdb, relative_path)
 
         for lookup_type in LOOKUP_TABLE_PROCESSING_ORDER:
             table_name = DB_TABLES[lookup_type]

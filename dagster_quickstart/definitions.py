@@ -21,6 +21,9 @@ from dagster_quickstart.assets import (
     hackernews,
     ingestion,
 )
+from dagster_quickstart.assets.csv_loader.load_metaseries.sensor import (
+    add_meta_series_partitions_sensor,
+)
 from dagster_quickstart.notifications.email_sensors import (
     outlook_email_on_run_failure,
 )
@@ -139,6 +142,10 @@ defs = Definitions(
     asset_checks=all_asset_checks,
     jobs=[ingestion_job, bloomberg_ingestion_job, metadata_job, calculations_job],
     schedules=[ingestion_schedule, calculations_schedule],
-    sensors=[teams_on_run_failure, outlook_email_failure_sensor],
+    sensors=[
+        teams_on_run_failure,
+        outlook_email_failure_sensor,
+        add_meta_series_partitions_sensor,
+    ],
     resources=resources,
 )

@@ -296,11 +296,10 @@ class MetaSeriesManager:
         Raises:
             DatabaseQueryError: If view creation fails.
         """
-        bucket = duckdb.get_bucket()
         relative_path = build_s3_control_table_path(
             S3_CONTROL_METADATA_SERIES, version_date, S3_PARQUET_FILE_NAME
         )
-        full_s3_path = build_full_s3_path(bucket, relative_path)
+        full_s3_path = build_full_s3_path(duckdb, relative_path)
 
         view_sql = self._build_meta_series_view_sql(duckdb, full_s3_path, context)
 

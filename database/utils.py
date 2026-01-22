@@ -1,21 +1,20 @@
-"""Database utility functions for common operations."""
+"""Database utility functions for common operations with DuckDB."""
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
 from dagster_quickstart.resources import DuckDBResource
 from dagster_quickstart.utils.datetime_utils import utc_now_metadata
 
 # Type alias for database resources
-# Imported from central location to avoid duplication
-DatabaseResource = Union[DuckDBResource]
+DatabaseResource = DuckDBResource
 
 
 def get_next_id(database: DatabaseResource, table_name: str, id_column: str) -> int:
     """Get the next ID for a table by querying max ID.
 
     Args:
-        database: Database resource (ClickHouse or DuckDB)
+        database: DuckDB database resource
         table_name: Name of the table
         id_column: Name of the ID column
 
@@ -24,8 +23,15 @@ def get_next_id(database: DatabaseResource, table_name: str, id_column: str) -> 
     """
     query = f"SELECT max({id_column}) FROM {table_name}"
     result = database.execute_query(query)
-    if hasattr(result, "result_rows") and result.result_rows and result.result_rows[0][0]:
-        return result.result_rows[0][0] + 1
+
+    # Handle pandas DataFrame result from DuckDB
+    if hasattr(result, "empty") and not result.empty:
+        max_id = result.iloc[0, 0]
+        return (max_id + 1) if max_id is not None else 1
+    elif hasattr(result, "iloc") and len(result) > 0:
+        max_id = result.iloc[0, 0]
+        return (max_id + 1) if max_id is not None else 1
+
     return 1
 
 
@@ -38,7 +44,7 @@ def get_by_name(
     """Get a record by name from any lookup table.
 
     Args:
-        database: Database resource (ClickHouse or DuckDB)
+        database: DuckDB database resource
         table_name: Name of the table
         name_column: Name of the name column
         name: Name to search for
@@ -46,12 +52,9 @@ def get_by_name(
     Returns:
         Dictionary with record data or None if not found
     """
-    query = f"SELECT * FROM {table_name} WHERE {name_column} = {{name:String}} LIMIT 1"
-    result = database.execute_query(query, parameters={"name": name})
-    if hasattr(result, "result_rows") and result.result_rows:
-        columns = result.column_names
-        return dict(zip(columns, result.result_rows[0]))
-    return None
+    query = f"SELECT * FROM {table_name} WHERE {name_column} = ? LIMIT 1"
+    result = database.execute_query(query, parameters=[name])
+    return query_to_dict(result)
 
 
 def get_by_id(
@@ -63,7 +66,7 @@ def get_by_id(
     """Get a record by ID from any lookup table.
 
     Args:
-        database: Database resource (ClickHouse or DuckDB)
+        database: DuckDB database resource
         table_name: Name of the table
         id_column: Name of the ID column
         record_id: ID to search for
@@ -71,12 +74,9 @@ def get_by_id(
     Returns:
         Dictionary with record data or None if not found
     """
-    query = f"SELECT * FROM {table_name} WHERE {id_column} = {{id:UInt32}} LIMIT 1"
-    result = database.execute_query(query, parameters={"id": record_id})
-    if hasattr(result, "result_rows") and result.result_rows:
-        columns = result.column_names
-        return dict(zip(columns, result.result_rows[0]))
-    return None
+    query = f"SELECT * FROM {table_name} WHERE {id_column} = ? LIMIT 1"
+    result = database.execute_query(query, parameters=[record_id])
+    return query_to_dict(result)
 
 
 def execute_update_query(
@@ -87,10 +87,10 @@ def execute_update_query(
     update_fields: Dict[str, Any],
     now: Optional[datetime] = None,
 ) -> None:
-    """Execute an UPDATE query using ALTER TABLE.
+    """Execute an UPDATE query using standard SQL UPDATE syntax.
 
     Args:
-        database: Database resource (ClickHouse or DuckDB)
+        database: DuckDB database resource
         table_name: Name of the table
         id_column: Name of the ID column
         record_id: ID of the record to update
@@ -100,44 +100,30 @@ def execute_update_query(
     if now is None:
         now = utc_now_metadata()
 
-    # Build SET clause
+    # Build SET clause with ? placeholders
     set_clauses = []
-    params = {"id": record_id, "now": now}
+    params = []
 
     for field_name, value in update_fields.items():
         if value is None:
             continue
-        if isinstance(value, bool):
-            set_clauses.append(f"{field_name} = {{field_{field_name}:UInt8}}")
-            params[f"field_{field_name}"] = 1 if value else 0
-        elif isinstance(value, str):
-            set_clauses.append(f"{field_name} = {{field_{field_name}:String}}")
-            params[f"field_{field_name}"] = value
-        elif isinstance(value, int):
-            # Check if it's a UInt8 field (like is_derived)
-            if field_name.startswith("is_") or field_name == "is_derived":
-                set_clauses.append(f"{field_name} = {{field_{field_name}:UInt8}}")
-                params[f"field_{field_name}"] = value
-            else:
-                set_clauses.append(f"{field_name} = {{field_{field_name}:UInt32}}")
-                params[f"field_{field_name}"] = value
-        else:
-            set_clauses.append(f"{field_name} = {{field_{field_name}:String}}")
-            params[f"field_{field_name}"] = str(value) if value is not None else None
+        set_clauses.append(f"{field_name} = ?")
+        params.append(value)
 
-    # Add updated_at (ClickHouse format - DuckDBResource will normalize)
-    set_clauses.append("updated_at = {now:DateTime64(6)}")
+    # Add updated_at
+    set_clauses.append("updated_at = ?")
+    params.append(now)
 
     if not set_clauses:
         return  # Nothing to update
 
-    # Use ClickHouse ALTER TABLE UPDATE syntax (canonical format)
-    # DuckDBResource will normalize this to standard UPDATE
+    # Use standard SQL UPDATE syntax with DuckDB ? placeholders
     query = f"""
-    ALTER TABLE {table_name}
-    UPDATE {', '.join(set_clauses)}
-    WHERE {id_column} = {{id:UInt32}}
+    UPDATE {table_name}
+    SET {', '.join(set_clauses)}
+    WHERE {id_column} = ?
     """
+    params.append(record_id)
 
     database.execute_command(query, parameters=params)
 
@@ -150,10 +136,10 @@ def execute_insert_query(
     insert_fields: Dict[str, Any],
     now: Optional[datetime] = None,
 ) -> None:
-    """Execute an INSERT query.
+    """Execute an INSERT query using standard SQL INSERT syntax.
 
     Args:
-        database: Database resource (ClickHouse or DuckDB)
+        database: DuckDB database resource
         table_name: Name of the table
         id_column: Name of the ID column
         record_id: ID to insert
@@ -165,33 +151,19 @@ def execute_insert_query(
 
     # Build columns and values (only include non-None fields)
     columns = [id_column]
-    value_placeholders = ["{id:UInt32}"]
-    params = {"id": record_id, "now": now}
+    value_placeholders = ["?"]
+    params = [record_id]
 
     for field_name, value in insert_fields.items():
         if value is None:
             continue
         columns.append(field_name)
-        if isinstance(value, bool):
-            value_placeholders.append(f"{{field_{field_name}:UInt8}}")
-            params[f"field_{field_name}"] = 1 if value else 0
-        elif isinstance(value, str):
-            value_placeholders.append(f"{{field_{field_name}:String}}")
-            params[f"field_{field_name}"] = value
-        elif isinstance(value, int):
-            # Check if it's a UInt8 field (like is_derived)
-            if field_name.startswith("is_") or field_name == "is_derived":
-                value_placeholders.append(f"{{field_{field_name}:UInt8}}")
-                params[f"field_{field_name}"] = value
-            else:
-                value_placeholders.append(f"{{field_{field_name}:UInt32}}")
-                params[f"field_{field_name}"] = value
-        else:
-            value_placeholders.append(f"{{field_{field_name}:String}}")
-            params[f"field_{field_name}"] = str(value) if value is not None else None
+        value_placeholders.append("?")
+        params.append(value)
 
     columns.extend(["created_at", "updated_at"])
-    value_placeholders.extend(["{now:DateTime64(6)}", "{now:DateTime64(6)}"])
+    value_placeholders.extend(["?", "?"])
+    params.extend([now, now])
 
     query = f"""
     INSERT INTO {table_name} ({', '.join(columns)})
@@ -204,34 +176,54 @@ def execute_insert_query(
 def query_to_dict_list(
     result: Any,
 ) -> List[Dict[str, Any]]:
-    """Convert ClickHouse query result to list of dictionaries.
+    """Convert DuckDB query result (pandas DataFrame) to list of dictionaries.
 
     Args:
-        result: ClickHouse query result
+        result: DuckDB query result (pandas DataFrame)
 
     Returns:
         List of dictionaries, one per row
     """
-    if not hasattr(result, "column_names") or not hasattr(result, "result_rows"):
-        return []
+    # Handle pandas DataFrame result from DuckDB
+    if hasattr(result, "columns") and hasattr(result, "to_dict"):
+        if result.empty:
+            return []
+        return result.to_dict("records")
 
-    columns = result.column_names
-    return [dict(zip(columns, row)) for row in result.result_rows]
+    # Fallback: try to convert if it has to_dict method
+    if hasattr(result, "to_dict"):
+        try:
+            return result.to_dict("records")
+        except Exception:
+            pass
+
+    return []
 
 
 def query_to_dict(
     result: Any,
 ) -> Optional[Dict[str, Any]]:
-    """Convert ClickHouse query result to single dictionary (first row).
+    """Convert DuckDB query result (pandas DataFrame) to single dictionary (first row).
 
     Args:
-        result: ClickHouse query result
+        result: DuckDB query result (pandas DataFrame)
 
     Returns:
         Dictionary with first row data or None if no rows
     """
-    if not hasattr(result, "result_rows") or not result.result_rows:
-        return None
+    # Handle pandas DataFrame result from DuckDB
+    if hasattr(result, "columns") and hasattr(result, "empty"):
+        if result.empty:
+            return None
+        # Convert first row to dict
+        return result.iloc[0].to_dict()
 
-    columns = result.column_names
-    return dict(zip(columns, result.result_rows[0]))
+    # Fallback: try to convert if it has to_dict method
+    if hasattr(result, "to_dict"):
+        try:
+            records = result.to_dict("records")
+            return records[0] if records else None
+        except Exception:
+            pass
+
+    return None
