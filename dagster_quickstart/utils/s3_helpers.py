@@ -196,16 +196,21 @@ def save_value_data_to_s3(
             duckdb.execute_command(create_existing_table_sql)
 
             # Merge existing and new data, removing duplicates by (series_id, timestamp)
+            # Prioritize new data over existing data when duplicates exist
+            # Use source priority: 1 = new data (higher priority), 0 = existing data (lower priority)
             create_merged_table_sql = f"""
                 CREATE TEMP TABLE {temp_table_merged} AS
                 SELECT series_id, timestamp, value
                 FROM (
                     SELECT series_id, timestamp, value,
-                           ROW_NUMBER() OVER (PARTITION BY series_id, timestamp ORDER BY timestamp DESC) as rn
+                           ROW_NUMBER() OVER (
+                               PARTITION BY series_id, timestamp 
+                               ORDER BY source_priority DESC, timestamp DESC
+                           ) as rn
                     FROM (
-                        SELECT series_id, timestamp, value FROM {temp_table_existing}
+                        SELECT series_id, timestamp, value, 1 as source_priority FROM {temp_table_new}
                         UNION ALL
-                        SELECT series_id, timestamp, value FROM {temp_table_new}
+                        SELECT series_id, timestamp, value, 0 as source_priority FROM {temp_table_existing}
                     )
                 )
                 WHERE rn = 1

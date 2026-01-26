@@ -10,7 +10,7 @@ from dagster_quickstart.utils.datetime_utils import parse_datetime_string
 class BloombergIngestionConfig(Config):
     """Configuration for Bloomberg data ingestion."""
 
-    force_refresh: bool = True  # If True, delete existing data for the partition date before inserting (ensures idempotency when re-running a partition). If False, skip insertion if data already exists for the date.
+    force_refresh: bool = False  # If True, delete existing data for the partition date before inserting (ensures idempotency when re-running a partition). If False, skip insertion if data already exists for the date.
     use_dummy_data: bool = True  # If True, use dummy ClickHouse data instead of real database queries. Useful for testing with PyPDL.
 
 
