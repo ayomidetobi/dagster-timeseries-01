@@ -30,8 +30,7 @@ from dagster_quickstart.utils.helpers import (
     unregister_temp_table,
 )
 from database.ddl import (
-    EXTRACT_LOOKUP_CODE_BASED,
-    EXTRACT_LOOKUP_SIMPLE,
+    EXTRACT_LOOKUP,
     LOOKUP_RESULTS_QUERY,
 )
 
@@ -103,23 +102,18 @@ def _build_extract_lookup_query(
     """
     if lookup_type in CODE_BASED_LOOKUPS:
         code_field, name_field, _ = CODE_BASED_LOOKUPS[lookup_type]
-        return EXTRACT_LOOKUP_CODE_BASED.format(
-            lookup_type=lookup_type,
-            uuid="{uuid}",
-            staging_column=staging_column,
-            code_field=code_field,
-            name_field=name_field,
-            source_temp_table=source_temp_table,
-        )
+        select_columns = f"{staging_column} AS {code_field}, {staging_column} AS {name_field}"
     else:
         _, name_column = DB_COLUMNS[lookup_type]
-        return EXTRACT_LOOKUP_SIMPLE.format(
-            lookup_type=lookup_type,
-            uuid="{uuid}",
-            staging_column=staging_column,
-            name_column=name_column,
-            source_temp_table=source_temp_table,
-        )
+        select_columns = f"{staging_column} AS {name_column}"
+
+    return EXTRACT_LOOKUP.format(
+        lookup_type=lookup_type,
+        uuid="{uuid}",
+        staging_column=staging_column,
+        select_columns=select_columns,
+        source_temp_table=source_temp_table,
+    )
 
 
 def _extract_lookup_table_data_to_temp(

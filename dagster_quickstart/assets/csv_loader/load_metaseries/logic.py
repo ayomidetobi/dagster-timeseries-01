@@ -19,7 +19,6 @@ if TYPE_CHECKING:
 from dagster_quickstart.utils.constants import (
     CODE_BASED_LOOKUPS,
     LOOKUP_TABLE_PROCESSING_ORDER,
-    NULL_VALUE_REPRESENTATION,
     S3_CONTROL_LOOKUP,
     S3_PARQUET_FILE_NAME,
 )
@@ -32,8 +31,7 @@ from dagster_quickstart.utils.constants import (
 from dagster_quickstart.utils.helpers import (
     build_full_s3_path,
     build_s3_control_table_path,
-    load_csv_to_temp_table,
-    unregister_temp_table,
+    process_csv_to_s3_with_validation,
     validate_referential_integrity_sql,
 )
 from database.ddl import (
@@ -231,28 +229,51 @@ def process_csv_to_s3_control_table_meta_series(
     """
     context.log.info("Processing meta series from CSV to S3 control table (versioned)")
 
-    # Step 1: Load CSV directly into DuckDB temp table (no pandas)
-    temp_table = load_csv_to_temp_table(duckdb, csv_path, NULL_VALUE_REPRESENTATION, context)
+    # Create wrapper function to match helper's expected signature
+    def save_to_s3_wrapper(
+        duckdb: DuckDBResource, temp_table: str, version_date: str, context=None, **kwargs: Any
+    ) -> str:
+        return meta_manager.save_meta_series_to_s3(duckdb, temp_table, version_date, context)
 
-    try:
-        # Step 2: Validate referential integrity against lookup tables
-        _validate_meta_series_against_lookup_tables(context, duckdb, temp_table, version_date)
+    # Use generic helper for CSV → validate → write → create view flow
+    # Note: View creation is disabled here since it's handled in the asset function
+    process_csv_to_s3_with_validation(
+        context=context,
+        duckdb=duckdb,
+        csv_path=csv_path,
+        version_date=version_date,
+        save_to_s3_func=save_to_s3_wrapper,
+        create_view_func=None,  # View creation handled in asset
+        validation_func=_validate_meta_series_against_lookup_tables,
+        view_creation_enabled=False,  # View creation handled in asset
+    )
 
-        # Step 3: Write validated data to S3 control table (versioned, immutable)
-        # Use MetaSeriesManager for CRUD operations (passed from asset)
-        meta_manager.save_meta_series_to_s3(duckdb, temp_table, version_date, context)
+    # Build results dictionary (series_code -> row_index) from saved S3 data
+    # Read from S3 control table - row_index is computed based on saved order
+    from dagster_quickstart.utils.constants import S3_CONTROL_METADATA_SERIES, S3_PARQUET_FILE_NAME
+    from dagster_quickstart.utils.s3_helpers import build_full_s3_path
 
-        # Note: View creation is handled in the asset function, not here
+    relative_path = build_s3_control_table_path(
+        S3_CONTROL_METADATA_SERIES, version_date, S3_PARQUET_FILE_NAME
+    )
+    full_s3_path = build_full_s3_path(duckdb, relative_path)
 
-        # Step 5: Build results dictionary (series_code -> row_index)
-        # Row index is deterministic based on order in CSV (using row_number in SQL)
-        results = _build_meta_series_results(context, duckdb, temp_table)
+    # Build results from saved S3 file
+    results_query = META_SERIES_RESULTS_QUERY.format(temp_table=f"read_parquet('{full_s3_path}')")
+    result = duckdb.execute_query(results_query)
 
-        context.log.info(f"Loaded {len(results)} meta series records to S3 control table")
-        return results
-    finally:
-        # Clean up temp table
-        unregister_temp_table(duckdb, temp_table, context)
+    if result is None or result.empty:
+        context.log.warning("No results found in saved S3 control table")
+        return {}
+
+    results = {}
+    for _, row in result.iterrows():
+        series_code = str(row["series_code"]).strip()
+        if series_code:
+            results[series_code] = int(row["row_index"])
+
+    context.log.info(f"Loaded {len(results)} meta series records to S3 control table")
+    return results
 
 
 def _build_meta_series_results(

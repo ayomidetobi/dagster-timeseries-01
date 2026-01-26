@@ -103,12 +103,12 @@ def save_bloomberg_value_data_to_s3(
     try:
         # Log force_refresh if enabled
         if force_refresh:
-            from dagster_quickstart.utils.helpers import build_s3_value_data_path
+            from dagster_quickstart.utils.s3_helpers import build_s3_value_data_path
 
-            relative_path = build_s3_value_data_path(series_code, target_date)
+            relative_path = build_s3_value_data_path(series_code)
             context.log.info(
-                f"force_refresh=True: will overwrite existing data for {series_code}",
-                extra={"series_code": series_code, "s3_path": relative_path},
+                f"force_refresh=True: will overwrite existing data for partition_date={target_date.date()} for {series_code}",
+                extra={"series_code": series_code, "s3_path": relative_path, "partition_date": target_date.date().isoformat()},
             )
 
         # Save to S3 using helper function
@@ -117,6 +117,7 @@ def save_bloomberg_value_data_to_s3(
             value_data=value_data,
             series_code=series_code,
             partition_date=target_date,
+            force_refresh=force_refresh,
             context=context,
         )
 

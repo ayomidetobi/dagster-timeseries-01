@@ -31,18 +31,11 @@ LOOKUP_TABLE_VIEW_SELECT_SIMPLE = """
                     lookup_type
             """
 
-# Template for lookup table view WHERE clause (code-based lookups)
-# Placeholders: {lookup_type}
-LOOKUP_TABLE_VIEW_WHERE_CODE_BASED = """
+# Template for lookup table view WHERE clause (generic - works for both code-based and simple)
+# Placeholders: {lookup_type}, {column_name} (use 'code' for code-based, 'name' for simple)
+LOOKUP_TABLE_VIEW_WHERE = """
                 WHERE lookup_type = '{lookup_type}'
-                    AND code IS NOT NULL AND code != ''
-            """
-
-# Template for lookup table view WHERE clause (simple lookups)
-# Placeholders: {lookup_type}
-LOOKUP_TABLE_VIEW_WHERE_SIMPLE = """
-                WHERE lookup_type = '{lookup_type}'
-                    AND name IS NOT NULL AND name != ''
+                    AND {column_name} IS NOT NULL AND {column_name} != ''
             """
 
 # Template for UNION ALL SELECT (code-based lookups)
@@ -74,24 +67,14 @@ LOOKUP_RESULTS_QUERY = """
         ORDER BY row_index
     """
 
-# Template for extracting lookup table data (code-based lookups)
-# Placeholders: {lookup_type}, {uuid}, {staging_column}, {code_field}, {name_field}, {source_temp_table}
-EXTRACT_LOOKUP_CODE_BASED = """
+# Template for extracting lookup table data (generic - works for both code-based and simple)
+# Placeholders: {lookup_type}, {uuid}, {staging_column}, {select_columns}, {source_temp_table}
+# For code-based: {select_columns} = "{staging_column} AS {code_field}, {staging_column} AS {name_field}"
+# For simple: {select_columns} = "{staging_column} AS {name_column}"
+EXTRACT_LOOKUP = """
             CREATE TEMP TABLE _temp_lookup_{lookup_type}_{{uuid}} AS
             SELECT DISTINCT 
-                {staging_column} AS {code_field},
-                {staging_column} AS {name_field}
-            FROM {source_temp_table}
-            WHERE {staging_column} IS NOT NULL AND {staging_column} != ''
-            ORDER BY {staging_column}
-        """
-
-# Template for extracting lookup table data (simple lookups)
-# Placeholders: {lookup_type}, {uuid}, {staging_column}, {name_column}, {source_temp_table}
-EXTRACT_LOOKUP_SIMPLE = """
-            CREATE TEMP TABLE _temp_lookup_{lookup_type}_{{uuid}} AS
-            SELECT DISTINCT 
-                {staging_column} AS {name_column}
+                {select_columns}
             FROM {source_temp_table}
             WHERE {staging_column} IS NOT NULL AND {staging_column} != ''
             ORDER BY {staging_column}
@@ -126,3 +109,41 @@ META_SERIES_VALIDATION_QUERY = """
     FROM {temp_table} ms
     WHERE NOT ({validation_sql})
     """
+
+# ============================================================================
+# DDL Statements for DuckDB Operations
+# ============================================================================
+
+# Template for creating temporary table from CSV file
+# Placeholders: {temp_table}, {csv_path}, {null_value}
+CREATE_TEMP_TABLE_FROM_CSV = """
+    CREATE TEMP TABLE {temp_table} AS
+    SELECT * FROM read_csv('{csv_path}', 
+        nullstr='{null_value}',
+        header=true,
+        auto_detect=true,
+        ignore_errors=false
+    )
+"""
+
+# Template for creating temporary table from SQL query
+# Placeholders: {temp_table_name}, {query}
+CREATE_TEMP_TABLE_FROM_QUERY = """
+    CREATE TEMP TABLE {temp_table_name} AS {query}
+"""
+
+# Template for dropping temporary table
+# Placeholders: {temp_table}
+DROP_TEMP_TABLE = "DROP TABLE IF EXISTS {temp_table}"
+
+# Template for reading Parquet schema (returns column names)
+# Placeholders: {full_s3_path}
+READ_PARQUET_SCHEMA = "SELECT * FROM read_parquet('{full_s3_path}') LIMIT 0"
+
+# ============================================================================
+# Common SQL Patterns (reusable fragments)
+# ============================================================================
+
+# Pattern for checking if a column is not null and not empty
+# Placeholders: {column_name}
+NOT_NULL_AND_NOT_EMPTY = "{column_name} IS NOT NULL AND {column_name} != ''"

@@ -13,6 +13,7 @@ Features:
 """
 
 import uuid
+from datetime import datetime
 from typing import Any, Optional, Union
 
 import pandas as pd
@@ -33,6 +34,7 @@ from dagster_quickstart.utils.constants import (
 from dagster_quickstart.utils.helpers import (
     create_sql_query_with_file_path,
 )
+from dagster_quickstart.utils.s3_helpers import build_s3_value_data_path
 
 logger = get_dagster_logger()
 
@@ -43,7 +45,7 @@ class DuckDBIOManager(ConfigurableIOManager):
     Uses DuckDBResource's save() and load() methods which leverage duckdb_datacacher's
     built-in S3 access. DuckDBResource already has S3 bucket access configured.
 
-    For value data: Uses series_id from metadata to build path
+    For value data: Uses series_code from metadata to build path (requires partition_date)
     For other data: Uses asset key to build path
 
     Attributes:
@@ -149,7 +151,7 @@ class DuckDBIOManager(ConfigurableIOManager):
         """Unified S3 path resolution for both input and output contexts.
 
         Determines the S3 path based on:
-        1. Value data: series_id from metadata or DataFrame (if output)
+        1. Value data: series_code from metadata or DataFrame (if output) - uses unified path
         2. Generic data: asset key path
 
         Args:
@@ -159,64 +161,88 @@ class DuckDBIOManager(ConfigurableIOManager):
         Returns:
             Relative S3 path (relative to bucket)
         """
-        # Try to get series_id from metadata (safe access)
-        series_id = self._get_series_id_from_metadata(context)
+        # Try to get series_code from metadata (safe access)
+        series_code = self._get_series_code_from_metadata(context)
 
         # For output context, also check DataFrame for value data
-        if df is not None and series_id is None:
-            series_id = self._extract_series_id_from_dataframe(df)
+        if df is not None and series_code is None:
+            series_code = self._extract_series_code_from_dataframe(df)
 
-        # If we have a series_id, use value data path
-        if series_id is not None:
-            return f"{self.s3_base_path}/series_id={series_id}/{S3_PARQUET_FILE_NAME}"
+        # If we have a series_code, use value data path (unified path, no date partitioning)
+        if series_code is not None:
+            return build_s3_value_data_path(series_code)
 
         # For generic DataFrames, use asset key
         return self._get_asset_based_path(context)
 
-    def _get_series_id_from_metadata(
+    def _get_series_code_from_metadata(
         self, context: Union[InputContext, OutputContext]
-    ) -> Optional[int]:
-        """Safely extract series_id from context metadata.
+    ) -> Optional[str]:
+        """Safely extract series_code from context metadata.
 
         Args:
             context: Dagster context (input or output)
 
         Returns:
-            Series ID if found in metadata, None otherwise
+            Series code if found in metadata, None otherwise
         """
         metadata = getattr(context, "metadata", None)
         if metadata is None or not hasattr(metadata, "get"):
             return None
 
-        series_id = metadata.get("series_id")
-        if series_id is not None:
-            try:
-                return int(series_id)
-            except (ValueError, TypeError):
-                logger.warning(f"Invalid series_id in metadata: {series_id}")
-                return None
+        series_code = metadata.get("series_code")
+        if series_code is not None:
+            return str(series_code)
 
         return None
 
-    def _extract_series_id_from_dataframe(self, df: pd.DataFrame) -> Optional[int]:
-        """Extract series_id from DataFrame (only if single series).
+    def _get_partition_date_from_metadata(
+        self, context: Union[InputContext, OutputContext]
+    ) -> Optional[datetime]:
+        """Safely extract partition_date from context metadata.
+
+        Args:
+            context: Dagster context (input or output)
+
+        Returns:
+            Partition date if found in metadata, None otherwise
+        """
+        metadata = getattr(context, "metadata", None)
+        if metadata is None or not hasattr(metadata, "get"):
+            return None
+
+        partition_date = metadata.get("partition_date") or metadata.get("target_date")
+        if partition_date is not None:
+            if isinstance(partition_date, datetime):
+                return partition_date
+            try:
+                # Try to parse if it's a string
+                from dagster_quickstart.utils.datetime_utils import parse_timestamp
+
+                parsed = parse_timestamp(partition_date)
+                if parsed:
+                    return parsed
+            except Exception:
+                pass
+
+        return None
+
+    def _extract_series_code_from_dataframe(self, df: pd.DataFrame) -> Optional[str]:
+        """Extract series_code from DataFrame (only if single series).
 
         Args:
             df: DataFrame to check
 
         Returns:
-            Series ID if DataFrame contains single series, None otherwise
+            Series code if DataFrame contains single series, None otherwise
         """
-        if df.empty or "series_id" not in df.columns:
+        if df.empty or "series_code" not in df.columns:
             return None
 
-        # Only extract if DataFrame contains a single unique series_id
-        series_ids = df["series_id"].unique()
-        if len(series_ids) == 1:
-            try:
-                return int(series_ids[0])
-            except (ValueError, TypeError):
-                return None
+        # Only extract if DataFrame contains a single unique series_code
+        series_codes = df["series_code"].unique()
+        if len(series_codes) == 1:
+            return str(series_codes[0])
 
         return None
 
@@ -232,7 +258,9 @@ class DuckDBIOManager(ConfigurableIOManager):
         asset_key = context.asset_key
         asset_name = asset_key.path[-1] if asset_key.path else "unknown"
         asset_group = asset_key.path[-2] if len(asset_key.path) >= 2 else "default"
-        return f"{self.s3_base_path}/{asset_group}/{asset_name}.parquet"
+        return (
+            f"{self.s3_base_path}/{asset_group}/{asset_name}.{S3_PARQUET_FILE_NAME.split('.')[-1]}"
+        )
 
     def _convert_to_dataframe(self, obj: Any, context: OutputContext) -> pd.DataFrame:
         """Convert input object to pandas DataFrame.

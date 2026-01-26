@@ -14,6 +14,7 @@ from dagster_quickstart.utils.constants import (
     RETRY_POLICY_DELAY_INGESTION,
     RETRY_POLICY_MAX_RETRIES_INGESTION,
 )
+from dagster_quickstart.utils.csv_loader_helpers import ensure_views_exist
 from dagster_quickstart.utils.exceptions import DatabaseQueryError, S3ControlTableNotFoundError
 from dagster_quickstart.utils.helpers import get_version_date
 from dagster_quickstart.utils.partitions import (
@@ -100,8 +101,15 @@ def ingest_bloomberg_data_pypdl(
 
     # Ensure views exist before querying (metaSeries and lookup tables)
     try:
-        meta_manager.create_or_update_view(duckdb, version_date, context=context)
-        lookup_manager.create_or_update_views(duckdb, version_date, context=context)
+        ensure_views_exist(
+            context=context,
+            duckdb=duckdb,
+            version_date=version_date,
+            create_view_funcs=[
+                meta_manager.create_or_update_view,
+                lookup_manager.create_or_update_views,
+            ],
+        )
     except DatabaseQueryError as e:
         # Handle missing S3 control table
         # Determine which control table failed based on error message

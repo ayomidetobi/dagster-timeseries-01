@@ -78,24 +78,19 @@ def fetch_bloomberg_data(
 
         # Generate dummy data points with random values
         # Format: [{"timestamp": datetime, "value": float}, ...]
-        num_points = random.randint(1, 5)  # Random number of data points (1-5)
+
         data_points = []
 
-        for i in range(num_points):
-            # Generate random value between 100 and 200
-            value = round(random.uniform(100.0, 200.0), 6)
-            # Use the target date as timestamp (or add small random offset)
-            timestamp = start_date.replace(
-                hour=random.randint(9, 16),  # Market hours
-                minute=random.randint(0, 59),
-                second=random.randint(0, 59),
-            )
-            data_points.append(
-                {
-                    "timestamp": timestamp,
-                    "value": value,
-                }
-            )
+        # Generate random value between 100 and 200
+        value = round(random.uniform(100.0, 200.0), 6)
+        # Use the target date as timestamp (or add small random offset)
+        timestamp = start_date
+        data_points.append(
+            {
+                "timestamp": timestamp,
+                "value": value,
+            }
+        )
 
         context.log.info(
             "PyPDL fetch completed (DUMMY MODE)",

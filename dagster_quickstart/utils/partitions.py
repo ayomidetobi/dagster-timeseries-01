@@ -17,12 +17,24 @@ DAILY_PARTITION = DailyPartitionsDefinition(start_date="2025-12-01")
 # Dynamic partition for meta_series (one partition per series_id)
 META_SERIES_PARTITION = DynamicPartitionsDefinition(name="meta_series")
 
+# Dynamic partition for child series codes (derived series from dependencies)
+CHILD_SERIES_PARTITION = DynamicPartitionsDefinition(name="child_series")
+
 # Multi-dimensional partition combining daily and meta_series partitions
 # Each partition represents one series (by series_id) for one date
 BLOOMBERG_INGESTION_PARTITION = MultiPartitionsDefinition(
     {
         "date": DAILY_PARTITION,
         "series": META_SERIES_PARTITION,
+    }
+)
+
+# Multi-dimensional partition combining daily and child_series partitions
+# Each partition represents one derived series (by child_series_code) for one date
+CALCULATION_PARTITION = MultiPartitionsDefinition(
+    {
+        "date": DAILY_PARTITION,
+        "child_series": CHILD_SERIES_PARTITION,
     }
 )
 
