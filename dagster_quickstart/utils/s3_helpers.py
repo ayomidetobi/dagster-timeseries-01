@@ -11,7 +11,6 @@ from dagster_quickstart.utils.constants import (
     S3_BASE_PATH_CONTROL,
     S3_BASE_PATH_VALUE_DATA,
     S3_PARQUET_FILE_NAME,
-    S3_PARTITION_DATE,
     S3_PARTITION_SERIES_CODE,
     S3_VERSION_PREFIX,
 )
@@ -43,23 +42,21 @@ def build_s3_control_table_path(
 
 
 def build_s3_value_data_path(
-    series_code: str, partition_date: datetime, filename: str = S3_PARQUET_FILE_NAME
+    series_code: str, filename: str = S3_PARQUET_FILE_NAME
 ) -> str:
-    """Build relative S3 path for value data Parquet file.
+    """Build relative S3 path for unified value data Parquet file.
 
-    Value data is partitioned by series_code and date for efficient querying and idempotency.
-    Path format: value-data/series_code={series_code}/date={date}/data.parquet
+    Value data is stored in a single file per series_code, ordered by timestamp.
+    Path format: value-data/series_code={series_code}/data.parquet
 
     Args:
         series_code: Series code (readable identifier)
-        partition_date: Partition date (datetime object)
         filename: Parquet filename (default: uses S3_PARQUET_FILE_NAME constant)
 
     Returns:
-        Relative S3 path (e.g., 'value-data/series_code=AAPL_US_EQ/date=2025-12-01/data.parquet')
+        Relative S3 path (e.g., 'value-data/series_code=AAPL_US_EQ/data.parquet')
     """
-    date_str = partition_date.strftime("%Y-%m-%d")
-    return f"{S3_BASE_PATH_VALUE_DATA}/{S3_PARTITION_SERIES_CODE}={series_code}/{S3_PARTITION_DATE}={date_str}/{filename}"
+    return f"{S3_BASE_PATH_VALUE_DATA}/{S3_PARTITION_SERIES_CODE}={series_code}/{filename}"
 
 
 def build_full_s3_path(duckdb: DuckDBResource, relative_path: str) -> str:
@@ -94,18 +91,23 @@ def save_value_data_to_s3(
     value_data: List[Dict[str, Any]],
     series_code: str,
     partition_date: datetime,
+    force_refresh: bool = False,
     context: Optional[AssetExecutionContext] = None,
 ) -> str:
     """Save value data to S3 Parquet file using DuckDBResource.
 
-    Creates a temp table, writes data to S3, then cleans up the temp table.
-    Uses the same pattern as meta series loading for consistency.
+    Saves all value data for a series_code in a single file, ordered by timestamp.
+    If force_refresh is True, overwrites existing data for the specified partition_date.
+    If force_refresh is False, merges new data with existing data.
+
+    Creates a temp table, merges with existing data if needed, writes to S3, then cleans up.
 
     Args:
         duckdb: DuckDB resource with S3 access
         value_data: List of dicts with keys: series_id, timestamp, value
         series_code: Series code for path construction
-        partition_date: Partition date for path construction
+        partition_date: Partition date for filtering existing data when force_refresh=True
+        force_refresh: If True, overwrite existing data for partition_date; if False, merge
         context: Optional Dagster context for logging
 
     Returns:
@@ -119,13 +121,17 @@ def save_value_data_to_s3(
             context.log.warning(f"No value data to save for series_code={series_code}")
         return ""
 
-    # Build S3 path
-    relative_path = build_s3_value_data_path(series_code, partition_date)
+    # Build unified S3 path (single file per series_code)
+    relative_path = build_s3_value_data_path(series_code)
+    full_s3_path = build_full_s3_path(duckdb, relative_path)
 
-    # Create temp table with value data using DuckDB native VALUES
+    # Create temp tables for data processing
     import uuid
 
-    temp_table = f"_temp_value_data_{uuid.uuid4().hex[:8]}"
+    temp_table_new = f"_temp_value_data_new_{uuid.uuid4().hex[:8]}"
+    temp_table_existing = f"_temp_value_data_existing_{uuid.uuid4().hex[:8]}"
+    temp_table_merged = f"_temp_value_data_merged_{uuid.uuid4().hex[:8]}"
+
     try:
         # Build VALUES clause from value_data
         values_parts = []
@@ -143,15 +149,75 @@ def save_value_data_to_s3(
 
         values_clause = ", ".join(values_parts)
 
-        # Create temp table using VALUES
-        create_table_sql = f"""
-            CREATE TEMP TABLE {temp_table} AS
+        # Create temp table with new data
+        create_new_table_sql = f"""
+            CREATE TEMP TABLE {temp_table_new} AS
             SELECT * FROM (VALUES {values_clause}) AS t(series_id, timestamp, value)
         """
-        duckdb.execute_command(create_table_sql)
+        duckdb.execute_command(create_new_table_sql)
 
-        # Build SELECT query with ordering
-        select_query = f"SELECT series_id, timestamp, value FROM {temp_table} ORDER BY timestamp"
+        # Check if existing file exists and read it
+        existing_data_query = f"SELECT COUNT(*) as count FROM read_parquet('{full_s3_path}')"
+        has_existing_data = False
+
+        try:
+            result = duckdb.execute_query(existing_data_query)
+            if result is not None and not result.empty:
+                count = result.iloc[0]["count"] if hasattr(result, "iloc") else result["count"].iloc[0]
+                has_existing_data = count > 0
+        except Exception:
+            # File doesn't exist, proceed with new data only
+            has_existing_data = False
+
+        if has_existing_data:
+            # Read existing data into temp table
+            partition_date_str = partition_date.strftime("%Y-%m-%d")
+            
+            if force_refresh:
+                # Filter out existing data for this partition_date
+                create_existing_table_sql = f"""
+                    CREATE TEMP TABLE {temp_table_existing} AS
+                    SELECT series_id, timestamp, value
+                    FROM read_parquet('{full_s3_path}')
+                    WHERE DATE(timestamp) != DATE('{partition_date_str}')
+                """
+                if context:
+                    context.log.info(
+                        f"force_refresh=True: filtering out existing data for partition_date={partition_date_str}"
+                    )
+            else:
+                # Keep all existing data
+                create_existing_table_sql = f"""
+                    CREATE TEMP TABLE {temp_table_existing} AS
+                    SELECT series_id, timestamp, value
+                    FROM read_parquet('{full_s3_path}')
+                """
+
+            duckdb.execute_command(create_existing_table_sql)
+
+            # Merge existing and new data, removing duplicates by (series_id, timestamp)
+            create_merged_table_sql = f"""
+                CREATE TEMP TABLE {temp_table_merged} AS
+                SELECT series_id, timestamp, value
+                FROM (
+                    SELECT series_id, timestamp, value,
+                           ROW_NUMBER() OVER (PARTITION BY series_id, timestamp ORDER BY timestamp DESC) as rn
+                    FROM (
+                        SELECT series_id, timestamp, value FROM {temp_table_existing}
+                        UNION ALL
+                        SELECT series_id, timestamp, value FROM {temp_table_new}
+                    )
+                )
+                WHERE rn = 1
+                ORDER BY timestamp
+            """
+            duckdb.execute_command(create_merged_table_sql)
+
+            # Use merged table for saving
+            select_query = f"SELECT series_id, timestamp, value FROM {temp_table_merged} ORDER BY timestamp"
+        else:
+            # No existing data, use new data only
+            select_query = f"SELECT series_id, timestamp, value FROM {temp_table_new} ORDER BY timestamp"
 
         # Write to S3 using DuckDBResource.save()
         success = duckdb.save(
@@ -173,6 +239,8 @@ def save_value_data_to_s3(
                     "partition_date": partition_date.date().isoformat(),
                     "s3_path": relative_path,
                     "row_count": len(value_data),
+                    "force_refresh": force_refresh,
+                    "merged_with_existing": has_existing_data,
                 },
             )
 
@@ -183,11 +251,12 @@ def save_value_data_to_s3(
             context.log.error(error_msg)
         raise DatabaseQueryError(error_msg) from e
     finally:
-        # Clean up temp table (DROP TABLE for temp tables)
-        try:
-            duckdb.execute_command(f"DROP TABLE IF EXISTS {temp_table}")
-        except Exception:
-            pass  # Ignore cleanup errors
+        # Clean up temp tables
+        for temp_table in [temp_table_new, temp_table_existing, temp_table_merged]:
+            try:
+                duckdb.execute_command(f"DROP TABLE IF EXISTS {temp_table}")
+            except Exception:
+                pass  # Ignore cleanup errors
 
 
 def write_to_s3_control_table(
@@ -254,6 +323,8 @@ def check_existing_value_data_in_s3(
 ) -> bool:
     """Check if value data already exists in S3 for the series and date.
 
+    Uses unified path (single file per series_code) and checks if data exists for the target_date.
+
     Args:
         duckdb: DuckDB resource with S3 access
         series_code: Series code for path construction and logging
@@ -267,12 +338,13 @@ def check_existing_value_data_in_s3(
     if force_refresh:
         return False
 
-    relative_path = build_s3_value_data_path(series_code, target_date)
+    relative_path = build_s3_value_data_path(series_code)
     full_s3_path = build_full_s3_path(duckdb, relative_path)
+    target_date_str = target_date.strftime("%Y-%m-%d")
 
     try:
-        # Try to read the file - if it exists and has data, skip
-        query = f"SELECT COUNT(*) as count FROM read_parquet('{full_s3_path}')"
+        # Try to read the file - check if data exists for the target_date
+        query = f"SELECT COUNT(*) as count FROM read_parquet('{full_s3_path}') WHERE DATE(timestamp) = DATE('{target_date_str}')"
         result = duckdb.execute_query(query)
         if result is not None and not result.empty:
             # DuckDB returns results as DataFrame-like object, access first row

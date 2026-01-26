@@ -19,26 +19,30 @@ def load_series_data_from_duckdb(
 ) -> Optional[pd.DataFrame]:
     """Load time-series data from S3 Parquet files for a given series_code and date.
 
+    Uses unified path (single file per series_code) and filters by partition_date.
     Uses DuckDBResource's load() method with SQL class bindings for S3 path resolution.
 
     Args:
         duckdb: DuckDB resource with S3 access via httpfs
         series_code: Series code to load data for
-        partition_date: Partition date for the data
+        partition_date: Partition date for filtering the data
 
     Returns:
         DataFrame with timestamp and value columns, or None if no data found
     """
-    # Get relative S3 path for this series (relative to bucket)
-    relative_path = build_s3_value_data_path(series_code, partition_date)
+    # Get relative S3 path for this series (unified path, no date partitioning)
+    relative_path = build_s3_value_data_path(series_code)
+    partition_date_str = partition_date.strftime("%Y-%m-%d")
 
     try:
         # Use DuckDBResource's load() method with SQL class for proper S3 path resolution
         if SQL is not None:
             # Use $file_path binding - sql_to_string will resolve it to full S3 path
+            # Filter by partition_date
             query = SQL(
-                "SELECT timestamp, value FROM read_parquet('$file_path') ORDER BY timestamp",
+                "SELECT timestamp, value FROM read_parquet('$file_path') WHERE DATE(timestamp) = DATE('$partition_date') ORDER BY timestamp",
                 file_path=relative_path,
+                partition_date=partition_date_str,
             )
 
             # Use DuckDBResource.load() which handles S3 path resolution via duckdb_datacacher
@@ -55,6 +59,7 @@ def load_series_data_from_duckdb(
             query = f"""
             SELECT timestamp, value
             FROM read_parquet('{full_s3_path}')
+            WHERE DATE(timestamp) = DATE('{partition_date_str}')
             ORDER BY timestamp
             """
             df = duckdb.execute_query(query)

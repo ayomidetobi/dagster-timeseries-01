@@ -41,8 +41,8 @@ def build_union_query_for_parents(
         parent_series_id = row["parent_series_id"]
         parent_series_code = row["parent_series_code"]
 
-        # Build S3 path for specific target date partition
-        relative_path = build_s3_value_data_path(parent_series_code, target_date)
+        # Build unified S3 path (single file per series_code)
+        relative_path = build_s3_value_data_path(parent_series_code)
         full_s3_path = build_full_s3_path(duckdb, relative_path)
 
         # Load data for target date only (filter to target date or earlier)

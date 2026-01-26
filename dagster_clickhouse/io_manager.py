@@ -151,7 +151,7 @@ class DuckDBIOManager(ConfigurableIOManager):
         """Unified S3 path resolution for both input and output contexts.
 
         Determines the S3 path based on:
-        1. Value data: series_code from metadata or DataFrame (if output) with partition_date
+        1. Value data: series_code from metadata or DataFrame (if output) - uses unified path
         2. Generic data: asset key path
 
         Args:
@@ -163,15 +163,14 @@ class DuckDBIOManager(ConfigurableIOManager):
         """
         # Try to get series_code from metadata (safe access)
         series_code = self._get_series_code_from_metadata(context)
-        partition_date = self._get_partition_date_from_metadata(context)
 
         # For output context, also check DataFrame for value data
         if df is not None and series_code is None:
             series_code = self._extract_series_code_from_dataframe(df)
 
-        # If we have a series_code and partition_date, use value data path
-        if series_code is not None and partition_date is not None:
-            return build_s3_value_data_path(series_code, partition_date)
+        # If we have a series_code, use value data path (unified path, no date partitioning)
+        if series_code is not None:
+            return build_s3_value_data_path(series_code)
 
         # For generic DataFrames, use asset key
         return self._get_asset_based_path(context)

@@ -12,7 +12,6 @@ from dagster_quickstart.utils.duckdb_helpers import (
 )
 from dagster_quickstart.utils.exceptions import CalculationError, MetaSeriesNotFoundError
 from dagster_quickstart.utils.helpers import (
-    build_s3_value_data_path,
     save_value_data_to_s3,
 )
 from dagster_quickstart.utils.summary import AssetSummary
@@ -210,14 +209,14 @@ def calculate_derived_series_logic(
         context.log.info(f"Calculated {len(output_df)} rows using DuckDB for {calc_type}")
 
         # Save to S3 using DuckDB macro
-        relative_path = build_s3_value_data_path(derived_series_code, target_date)
         # Convert DataFrame to list of dicts for save_value_data_to_s3
         value_data_list = output_df.to_dict("records")
-        save_value_data_to_s3(
+        s3_path = save_value_data_to_s3(
             duckdb=duckdb,
             value_data=value_data_list,
             series_code=derived_series_code,
             partition_date=target_date,
+            force_refresh=False,  # Calculations merge with existing data
             context=context,
         )
 
@@ -240,7 +239,7 @@ def calculate_derived_series_logic(
         summary.add_to_context(context)
 
         context.log.info(
-            f"Calculated {calc_type} for {derived_series_code}: {len(output_df)} rows saved to {relative_path}"
+            f"Calculated {calc_type} for {derived_series_code}: {len(output_df)} rows saved to {s3_path}"
         )
 
     except Exception as e:
