@@ -13,7 +13,7 @@ from dagster_quickstart.utils.helpers import round_to_six_decimal_places
 from dagster_quickstart.utils.summary import AssetSummary
 from database.lookup_tables import LookupTableManager
 from database.meta_series import MetaSeriesManager
-from database.models import TickerSource, TimeSeriesValue
+from database.schema import TickerSource, TimeSeriesValue
 from database.value_data import ValueDataManager
 
 from .config import IngestionConfig

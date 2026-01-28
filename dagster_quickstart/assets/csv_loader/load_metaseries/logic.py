@@ -196,6 +196,82 @@ def _validate_meta_series_against_lookup_tables(
     )
 
 
+def make_meta_series_save_wrapper(
+    meta_manager: "MetaSeriesManager",  # type: ignore[name-defined]
+    context: AssetExecutionContext,
+) -> Any:
+    """Create save_to_s3_wrapper function for meta series processing.
+
+    Returns a wrapper function that matches the expected signature for
+    process_csv_to_s3_with_validation's save_to_s3_func parameter.
+
+    Args:
+        meta_manager: MetaSeriesManager instance
+        context: Dagster execution context (for closure)
+
+    Returns:
+        Wrapper function with signature:
+        Callable[[DuckDBResource, str, str, Optional[AssetExecutionContext]], str]
+    """
+
+    # Signature must match: Callable[[DuckDBResource, str, str, Optional[AssetExecutionContext]], str]
+    def save_to_s3_wrapper(
+        duckdb_res: DuckDBResource,
+        temp_table: str,
+        version: str,
+        ctx: Optional[AssetExecutionContext] = None,
+        **kwargs: Any,
+    ) -> str:
+        return meta_manager.save_meta_series_to_s3(duckdb_res, temp_table, version, context)
+
+    return save_to_s3_wrapper
+
+
+def build_meta_series_results_from_s3(
+    duckdb: DuckDBResource,
+    version_date: str,
+    context: AssetExecutionContext,
+) -> Dict[str, int]:
+    """Build results dictionary (series_code -> row_index) from saved S3 control table.
+
+    Reads from S3 control table and computes row_index based on saved order.
+
+    Args:
+        duckdb: DuckDB resource with S3 access
+        version_date: Version date for S3 path construction
+        context: Dagster execution context for logging
+
+    Returns:
+        Dictionary mapping series_code -> row_index
+    """
+    # Build S3 path
+    relative_path = build_s3_control_table_path(
+        S3_CONTROL_METADATA_SERIES, version_date, S3_PARQUET_FILE_NAME
+    )
+    full_s3_path = build_full_s3_path(duckdb, relative_path)
+
+    # Build results from saved S3 file
+    # Query returns series_code ordered by series_code; row_index computed via enumerate()
+    results_query = META_SERIES_RESULTS_QUERY.format(temp_table=f"read_parquet('{full_s3_path}')")
+    result = duckdb.execute_query(results_query)
+
+    if result is None or result.empty:
+        context.log.warning(
+            "No results found in saved S3 control table",
+            extra={"s3_path": relative_path, "version_date": version_date},
+        )
+        return {}
+
+    results = {}
+    # Enumerate in Python to compute row_index (1-based), avoiding double row_number() in SQL
+    for idx, row in enumerate(result.itertuples(index=False), start=1):
+        series_code = str(row.series_code).strip()
+        if series_code:
+            results[series_code] = idx
+
+    return results
+
+
 def process_csv_to_s3_control_table_meta_series(
     context: AssetExecutionContext,
     duckdb: DuckDBResource,
@@ -231,16 +307,8 @@ def process_csv_to_s3_control_table_meta_series(
         extra={"csv_path": csv_path, "version_date": version_date},
     )
 
-    # Create wrapper function to match helper's expected signature
-    # Signature must match: Callable[[DuckDBResource, str, str, Optional[AssetExecutionContext]], str]
-    def save_to_s3_wrapper(
-        duckdb_res: DuckDBResource,
-        temp_table: str,
-        version: str,
-        context: Optional[AssetExecutionContext] = None,
-        **kwargs: Any,
-    ) -> str:
-        return meta_manager.save_meta_series_to_s3(duckdb_res, temp_table, version, context)
+    # Create wrapper function for saving to S3
+    save_to_s3_wrapper = make_meta_series_save_wrapper(meta_manager, context)
 
     # Use generic helper for CSV → validate → write → create view flow
     # Note: View creation is disabled here since it's handled in the asset function
@@ -255,29 +323,13 @@ def process_csv_to_s3_control_table_meta_series(
         view_creation_enabled=False,  # View creation handled in asset
     )
 
-    # Build results dictionary (series_code -> row_index) from saved S3 data
-    # Read from S3 control table - row_index is computed based on saved order
+    # Build results dictionary from saved S3 data
+    results = build_meta_series_results_from_s3(duckdb, version_date, context)
+
+    # Build relative path for logging
     relative_path = build_s3_control_table_path(
         S3_CONTROL_METADATA_SERIES, version_date, S3_PARQUET_FILE_NAME
     )
-    full_s3_path = build_full_s3_path(duckdb, relative_path)
-
-    # Build results from saved S3 file
-    results_query = META_SERIES_RESULTS_QUERY.format(temp_table=f"read_parquet('{full_s3_path}')")
-    result = duckdb.execute_query(results_query)
-
-    if result is None or result.empty:
-        context.log.warning(
-            "No results found in saved S3 control table",
-            extra={"s3_path": relative_path, "version_date": version_date},
-        )
-        return {}
-
-    results = {}
-    for _, row in result.iterrows():
-        series_code = str(row["series_code"]).strip()
-        if series_code:
-            results[series_code] = int(row["row_index"])
 
     context.log.info(
         "Loaded meta series records to S3 control table",

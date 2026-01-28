@@ -23,7 +23,7 @@ from dagster_quickstart.utils.helpers import (
     build_full_s3_path,
     build_s3_control_table_path,
 )
-from database.models import DataSource
+from database.schema import DataSource
 from database.utils import DatabaseResource, query_to_dict, query_to_dict_list
 
 # Constants

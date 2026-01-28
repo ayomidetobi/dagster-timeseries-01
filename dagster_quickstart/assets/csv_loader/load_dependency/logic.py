@@ -13,8 +13,10 @@ from typing import TYPE_CHECKING, Any, Dict, Tuple
 from dagster import AssetExecutionContext
 
 from dagster_quickstart.resources import DuckDBResource
+from dagster_quickstart.utils.constants import S3_CONTROL_DEPENDENCY, S3_PARQUET_FILE_NAME
 from dagster_quickstart.utils.csv_loader_helpers import process_csv_to_s3_with_validation
 from dagster_quickstart.utils.duckdb_helpers import unregister_temp_table
+from dagster_quickstart.utils.s3_helpers import build_full_s3_path, build_s3_control_table_path
 from dagster_quickstart.utils.validation_helpers import validate_referential_integrity_sql
 
 if TYPE_CHECKING:
@@ -349,6 +351,89 @@ def _enrich_and_save_dependencies(
             unregister_temp_table(duckdb, enriched_table, context)
 
 
+def make_dependency_save_wrapper(
+    context: AssetExecutionContext,
+    dependency_manager: "DependencyManager",  # type: ignore[name-defined]
+    meta_manager: Any,  # MetaSeriesManager
+) -> Any:
+    """Create save_to_s3_wrapper function for dependency processing.
+
+    Returns a wrapper function that matches the expected signature for
+    process_csv_to_s3_with_validation's save_to_s3_func parameter.
+
+    Args:
+        context: Dagster execution context (for closure)
+        dependency_manager: DependencyManager instance
+        meta_manager: MetaSeriesManager instance
+
+    Returns:
+        Wrapper function with signature:
+        Callable[[DuckDBResource, str, str, Optional[AssetExecutionContext]], str]
+    """
+
+    # Signature must match: Callable[[DuckDBResource, str, str, Optional[AssetExecutionContext]], str]
+    def save_to_s3_wrapper(
+        duckdb_res: DuckDBResource,
+        temp_table: str,
+        version: str,
+        ctx: AssetExecutionContext | None = None,
+        **kwargs: Any,
+    ) -> str:
+        # ctx is ignored because we already close over context, but signature must match
+        return _enrich_and_save_dependencies(
+            context, duckdb_res, temp_table, version, dependency_manager, meta_manager
+        )
+
+    return save_to_s3_wrapper
+
+
+def build_dependency_results_from_s3(
+    duckdb: DuckDBResource,
+    version_date: str,
+    context: AssetExecutionContext,
+) -> Dict[str, int]:
+    """Build results dictionary (dependency_id -> row_index) from saved S3 control table.
+
+    Reads from S3 control table and computes row_index based on saved order.
+
+    Args:
+        duckdb: DuckDB resource with S3 access
+        version_date: Version date for S3 path construction
+        context: Dagster execution context for logging
+
+    Returns:
+        Dictionary mapping dependency_id -> row_index
+    """
+    # Build S3 path
+    control_relative = build_s3_control_table_path(
+        S3_CONTROL_DEPENDENCY, version_date, S3_PARQUET_FILE_NAME
+    )
+    full_s3_path = build_full_s3_path(duckdb, control_relative)
+
+    # Query S3 to build dependency_id -> row_index mapping
+    # dependency_id is already computed when writing to S3, so we just select it ordered
+    # row_index is computed in Python via enumerate() to avoid double row_number() computation
+    query = f"""
+    SELECT 
+        dependency_id
+    FROM read_parquet('{full_s3_path}')
+    ORDER BY parent_series_id, child_series_id
+    """
+    result = duckdb.execute_query(query)
+
+    if result is None or result.empty:
+        context.log.warning("No dependency records found in saved S3 control table")
+        return {}
+
+    results: Dict[str, int] = {}
+    # Enumerate in Python to compute row_index (1-based), avoiding double row_number() in SQL
+    for idx, row in enumerate(result.itertuples(index=False), start=1):
+        dep_id = int(row.dependency_id)
+        results[str(dep_id)] = idx
+
+    return results
+
+
 def process_csv_to_s3_control_table_dependencies(
     context: AssetExecutionContext,
     duckdb: DuckDBResource,
@@ -384,18 +469,8 @@ def process_csv_to_s3_control_table_dependencies(
     """
     context.log.info("Processing series dependencies from CSV to S3 control table (versioned)")
 
-    # Wrap enrich+save so it matches process_csv_to_s3_with_validation's signature
-    def save_to_s3_wrapper(
-        duckdb_res: DuckDBResource,
-        temp_table: str,
-        version: str,
-        ctx: AssetExecutionContext | None = None,
-        **kwargs: Any,
-    ) -> str:
-        # ctx is ignored because we already close over context, but signature must match
-        return _enrich_and_save_dependencies(
-            context, duckdb_res, temp_table, version, dependency_manager, meta_manager
-        )
+    # Create wrapper function for saving to S3
+    save_to_s3_wrapper = make_dependency_save_wrapper(context, dependency_manager, meta_manager)
 
     # Use the generic CSV helper for:
     # - CSV → temp table
@@ -413,33 +488,8 @@ def process_csv_to_s3_control_table_dependencies(
         view_creation_enabled=False,
     )
 
-    # After writing, read back from S3 to build the dependency_id -> row_index mapping
-    from dagster_quickstart.utils.constants import S3_CONTROL_DEPENDENCY, S3_PARQUET_FILE_NAME
-    from dagster_quickstart.utils.s3_helpers import build_full_s3_path, build_s3_control_table_path
-
-    control_relative = build_s3_control_table_path(
-        S3_CONTROL_DEPENDENCY, version_date, S3_PARQUET_FILE_NAME
-    )
-    full_s3_path = build_full_s3_path(duckdb, control_relative)
-
-    query = f"""
-    SELECT 
-        dependency_id,
-        row_number() OVER (ORDER BY parent_series_id, child_series_id) AS row_index
-    FROM read_parquet('{full_s3_path}')
-    ORDER BY row_index
-    """
-    result = duckdb.execute_query(query)
-
-    if result is None or result.empty:
-        context.log.warning("No dependency records found in saved S3 control table")
-        return {}
-
-    results: Dict[str, int] = {}
-    for _, row in result.iterrows():
-        dep_id = int(row["dependency_id"])
-        row_index = int(row["row_index"])
-        results[str(dep_id)] = row_index
+    # Build results dictionary from saved S3 data
+    results = build_dependency_results_from_s3(duckdb, version_date, context)
 
     context.log.info(
         "Built dependency_id -> row_index mapping from S3 control table",
@@ -472,9 +522,9 @@ def _build_dependency_results(
         return {}
 
     results = {}
-    for _, row in result.iterrows():
-        dependency_id = int(row["dependency_id"])
-        row_index = int(row["row_index"])
-        results[str(dependency_id)] = row_index
+    # Enumerate in Python to compute row_index (1-based), avoiding double row_number() in SQL
+    for idx, row in enumerate(result.itertuples(index=False), start=1):
+        dependency_id = int(row.dependency_id)
+        results[str(dependency_id)] = idx
 
     return results

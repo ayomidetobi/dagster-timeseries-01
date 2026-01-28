@@ -14,7 +14,7 @@ from dagster_quickstart.utils.constants import (
     RETRY_POLICY_MAX_RETRIES_INGESTION,
 )
 from dagster_quickstart.utils.partitions import DAILY_PARTITION, get_partition_date
-from database.models import TickerSource
+from database.schema import TickerSource
 
 from .config import IngestionConfig
 from .logic import ingest_data_for_ticker_source

@@ -37,8 +37,18 @@ def build_union_query_for_parents(
     Raises:
         DatabaseQueryError: If no parent series data paths can be built
     """
-    union_parts: List[str] = []
+    # Precompute date filter strings once (same for all queries)
+    start_date_str = start_date.isoformat()
+    end_date_str = end_date.isoformat()
 
+    # Precompute SELECT template to avoid repeated string concatenation
+    select_template = (
+        "SELECT timestamp, value, {parent_series_id} as parent_series_id "
+        "FROM read_parquet('{full_s3_path}') "
+        "WHERE timestamp >= '{start_date}' AND timestamp <= '{end_date}'"
+    )
+
+    union_parts: List[str] = []
     for _, row in parent_series_result.iterrows():
         parent_series_id = row["parent_series_id"]
         parent_series_code = row["parent_series_code"]
@@ -47,16 +57,15 @@ def build_union_query_for_parents(
         relative_path = build_s3_value_data_path(parent_series_code)
         full_s3_path = build_full_s3_path(duckdb, relative_path)
 
-        # Load data for the specified date range (inclusive)
-        union_parts.append(f"""
-            SELECT 
-                timestamp, 
-                value,
-                {parent_series_id} as parent_series_id
-            FROM read_parquet('{full_s3_path}')
-            WHERE timestamp >= '{start_date.isoformat()}'
-              AND timestamp <= '{end_date.isoformat()}'
-        """)
+        # Build SELECT statement using precomputed template
+        union_parts.append(
+            select_template.format(
+                parent_series_id=parent_series_id,
+                full_s3_path=full_s3_path,
+                start_date=start_date_str,
+                end_date=end_date_str,
+            )
+        )
 
     if not union_parts:
         raise DatabaseQueryError("No parent series data paths to load")

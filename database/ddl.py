@@ -82,13 +82,13 @@ EXTRACT_LOOKUP = """
 
 # Template for building meta series results query (series_code -> row_index)
 # Placeholders: {temp_table}
+# Note: row_index is computed in Python via enumerate() to avoid double row_number() computation
 META_SERIES_RESULTS_QUERY = """
         SELECT 
-            series_code,
-            row_number() OVER (ORDER BY (SELECT NULL)) AS row_index
+            series_code
         FROM {temp_table}
         WHERE series_code IS NOT NULL AND series_code != ''
-        ORDER BY row_index
+        ORDER BY series_code
     """
 
 # Template for meta series validation condition (single lookup type check)
@@ -187,9 +187,11 @@ DEPENDENCY_ENRICHED_TABLE_QUERY = """
 
 # Template for building dependency results query (dependency_id -> row_index)
 # Placeholders: {temp_table}
+# Note: row_index is computed in Python via enumerate() to avoid double row_number() computation
+# dependency_id is already computed when writing to S3, so we just select it ordered
 DEPENDENCY_RESULTS_QUERY = """
     SELECT 
-        row_number() OVER (ORDER BY parent_series_id, child_series_id) AS dependency_id,
-        row_number() OVER (ORDER BY parent_series_id, child_series_id) AS row_index
+        dependency_id
     FROM {temp_table}
+    ORDER BY parent_series_id, child_series_id
 """

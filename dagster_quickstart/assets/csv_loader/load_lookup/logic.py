@@ -215,6 +215,84 @@ def _extract_lookup_table_data_to_temp(
         raise DatabaseQueryError(error_msg) from e
 
 
+def load_staging_temp_table(
+    duckdb: DuckDBResource,
+    csv_path: str,
+    context: AssetExecutionContext,
+) -> str:
+    """Load CSV file into staging temp table.
+
+    Wraps load_csv_to_temp_table for consistent usage.
+
+    Args:
+        duckdb: DuckDB resource with S3 access
+        csv_path: Path to CSV file
+        context: Dagster execution context
+
+    Returns:
+        Name of the staging temp table
+
+    Raises:
+        CSVValidationError: If CSV cannot be read
+    """
+    return load_csv_to_temp_table(duckdb, csv_path, NULL_VALUE_REPRESENTATION, context)
+
+
+def extract_all_lookup_temp_tables(
+    context: AssetExecutionContext,
+    duckdb: DuckDBResource,
+    staging_temp_table: str,
+    available_columns: list[str],
+) -> Dict[str, str]:
+    """Extract all lookup types from staging temp table to individual temp tables.
+
+    Loops over LOOKUP_TABLE_PROCESSING_ORDER, extracts each lookup type that exists
+    in available_columns, and returns dictionary mapping lookup_type -> temp table name.
+
+    Args:
+        context: Dagster execution context
+        duckdb: DuckDB resource with S3 access
+        staging_temp_table: Name of staging temp table with CSV data
+        available_columns: List of column names available in staging temp table
+
+    Returns:
+        Dictionary mapping lookup_type -> temp table name (only includes tables with data)
+
+    Raises:
+        DatabaseQueryError: If extraction fails
+    """
+    all_lookup_temp_tables: Dict[str, str] = {}
+
+    # Extract all lookup types from staging temp table
+    for lookup_type in LOOKUP_TABLE_PROCESSING_ORDER:
+        if lookup_type not in available_columns:
+            continue
+
+        try:
+            # Extract distinct lookup values for this type to temp table
+            temp_lookup_table = _extract_lookup_table_data_to_temp(
+                context, duckdb, staging_temp_table, lookup_type
+            )
+
+            # Check if temp table has data using helper function
+            if check_temp_table_has_data(duckdb, temp_lookup_table):
+                all_lookup_temp_tables[lookup_type] = temp_lookup_table
+            else:
+                # Clean up empty temp table
+                unregister_temp_table(duckdb, temp_lookup_table, context)
+        except DatabaseQueryError:
+            raise  # Re-raise domain-specific exceptions
+        except Exception as e:
+            error_msg = f"Unexpected error processing {lookup_type}: {e}"
+            context.log.error(
+                error_msg,
+                extra={"lookup_type": lookup_type},
+            )
+            raise DatabaseQueryError(error_msg) from e
+
+    return all_lookup_temp_tables
+
+
 def process_csv_to_s3_control_table_lookup_tables(
     context: AssetExecutionContext,
     duckdb: DuckDBResource,
@@ -250,10 +328,8 @@ def process_csv_to_s3_control_table_lookup_tables(
         extra={"csv_path": csv_path, "version_date": version_date},
     )
 
-    # Load CSV directly into DuckDB staging temp table (no pandas)
-    staging_temp_table = load_csv_to_temp_table(
-        duckdb, csv_path, NULL_VALUE_REPRESENTATION, context
-    )
+    # Load CSV into staging temp table
+    staging_temp_table = load_staging_temp_table(duckdb, csv_path, context)
 
     try:
         # Get available columns from staging temp table
@@ -264,34 +340,10 @@ def process_csv_to_s3_control_table_lookup_tables(
                 f"CSV file {csv_path} must have at least one lookup table column: {LOOKUP_TABLE_COLUMNS}"
             )
 
-        all_lookup_temp_tables: Dict[str, str] = {}
-
-        # Extract all lookup types from staging temp table
-        for lookup_type in LOOKUP_TABLE_PROCESSING_ORDER:
-            if lookup_type not in available_columns:
-                continue
-
-            try:
-                # Extract distinct lookup values for this type to temp table
-                temp_lookup_table = _extract_lookup_table_data_to_temp(
-                    context, duckdb, staging_temp_table, lookup_type
-                )
-
-                # Check if temp table has data using helper function
-                if check_temp_table_has_data(duckdb, temp_lookup_table):
-                    all_lookup_temp_tables[lookup_type] = temp_lookup_table
-                else:
-                    # Clean up empty temp table
-                    unregister_temp_table(duckdb, temp_lookup_table, context)
-            except DatabaseQueryError:
-                raise  # Re-raise domain-specific exceptions
-            except Exception as e:
-                error_msg = f"Unexpected error processing {lookup_type}: {e}"
-                context.log.error(
-                    error_msg,
-                    extra={"lookup_type": lookup_type},
-                )
-                raise DatabaseQueryError(error_msg) from e
+        # Extract all lookup types to individual temp tables
+        all_lookup_temp_tables = extract_all_lookup_temp_tables(
+            context, duckdb, staging_temp_table, available_columns
+        )
 
         # Save all lookup tables to S3 and build results dictionary
         all_results = _save_all_lookups_to_s3(

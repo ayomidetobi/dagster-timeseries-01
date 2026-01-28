@@ -9,17 +9,17 @@ from dagster_quickstart.resources import DuckDBResource
 from dagster_quickstart.utils.constants import CALCULATION_FORMULA_TYPES
 from dagster_quickstart.utils.exceptions import CalculationError, ReferentialIntegrityError
 from database.referential_integrity import ReferentialIntegrityValidator
+from database.schema import SeriesValidationContext
 
 
 def validate_series_metadata(
-    series: Dict[str, Any], series_id: int, series_code: str, context: AssetExecutionContext
+    series: Dict[str, Any], validation_ctx: SeriesValidationContext, context: AssetExecutionContext
 ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """Validate that series has required metadata (ticker and field_type name).
 
     Args:
         series: Series dictionary
-        series_id: Series ID for logging
-        series_code: Series code for logging
+        validation_ctx: SeriesValidationContext with series_id and series_code
         context: Dagster execution context for logging
 
     Returns:
@@ -30,11 +30,13 @@ def validate_series_metadata(
     field_type_name = series.get("field_type")
 
     if not ticker:
-        context.log.warning(f"Series {series_code} has no ticker, skipping")
+        # Only format string when actually logging
+        context.log.warning("Series %s has no ticker, skipping", validation_ctx.series_code)
         return None, None, "no ticker"
 
     if not field_type_name:
-        context.log.warning(f"Series {series_code} has no field_type, skipping")
+        # Only format string when actually logging
+        context.log.warning("Series %s has no field_type, skipping", validation_ctx.series_code)
         return None, None, "no field_type"
 
     return ticker, field_type_name, None
@@ -43,8 +45,7 @@ def validate_series_metadata(
 def validate_field_type_name(
     validator: ReferentialIntegrityValidator,
     field_type_name: str,
-    series_id: int,
-    series_code: str,
+    validation_ctx: SeriesValidationContext,
     context: AssetExecutionContext,
 ) -> Optional[str]:
     """Validate field type name using referential integrity.
@@ -54,24 +55,29 @@ def validate_field_type_name(
     Args:
         validator: Referential integrity validator instance
         field_type_name: Field type name to validate
-        series_id: Series ID for logging
-        series_code: Series code for logging
+        validation_ctx: SeriesValidationContext with series_id and series_code
         context: Dagster execution context for logging
 
     Returns:
         Field type name if valid, None if invalid
     """
     if not field_type_name:
-        context.log.warning(f"Series {series_code} has no field_type_name, skipping")
+        # Only format string when actually logging
+        context.log.warning(
+            "Series %s has no field_type_name, skipping", validation_ctx.series_code
+        )
         return None
 
     # Validate referential integrity using ReferentialIntegrityValidator
     validation_error = validator.validate_lookup_reference(
-        "field_type", field_type_name, series_code
+        "field_type", field_type_name, validation_ctx.series_code
     )
     if validation_error:
+        # Only format string when actually logging
         context.log.warning(
-            f"Invalid field_type_name reference for series {series_code}: {validation_error}"
+            "Invalid field_type_name reference for series %s: %s",
+            validation_ctx.series_code,
+            validation_error,
         )
         return None
 
@@ -133,10 +139,11 @@ def validate_calculation_columns(
         raise CalculationError(error_message)
 
     # Additional validation: ensure we have the exact number of columns expected
-    if len([col for col in merged_df.columns if col.startswith("value_")]) < required_column_count:
+    value_cols = [col for col in merged_df.columns if col.startswith("value_")]
+    if len(value_cols) < required_column_count:
         error_message = (
             f"Expected {required_column_count} value columns for {calculation_type} calculation, "
-            f"but found {len([col for col in merged_df.columns if col.startswith('value_')])} columns. "
+            f"but found {len(value_cols)} columns. "
             f"All parent series must have data in S3."
         )
 
