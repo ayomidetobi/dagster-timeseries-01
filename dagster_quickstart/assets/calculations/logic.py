@@ -216,12 +216,29 @@ def calculate_derived_series_logic(
 
         # Execute query - all calculation happens in DuckDB
         output_df = duckdb.execute_query(calculation_query)
-        context.log.info(f"Output DataFrame: {output_df}")
 
         if output_df is None or output_df.empty:
             raise CalculationError("No valid calculated values after processing")
 
-        context.log.info(f"Calculated {len(output_df)} rows using DuckDB for {calc_type}")
+        context.log.info(
+            "Calculated derived series DataFrame",
+            extra={
+                "row_count": len(output_df),
+                "columns": list(output_df.columns),
+                "calculation_type": calc_type,
+                "derived_series_code": derived_series_code,
+            },
+        )
+
+        # Optionally log a small sample in debug mode
+        if len(output_df) > 0:
+            context.log.debug(
+                "Derived series DataFrame sample",
+                extra={
+                    "sample_rows": output_df.head().to_dict("records"),
+                    "calculation_type": calc_type,
+                },
+            )
 
         # Save to S3 using DuckDB macro
         # Convert DataFrame to list of dicts for save_value_data_to_s3

@@ -21,13 +21,13 @@ from dagster_quickstart.utils.constants import (
     LOOKUP_TABLE_PROCESSING_ORDER,
     NULL_VALUE_REPRESENTATION,
 )
+from dagster_quickstart.utils.duckdb_helpers import (
+    load_csv_to_temp_table,
+    unregister_temp_table,
+)
 from dagster_quickstart.utils.exceptions import (
     CSVValidationError,
     DatabaseQueryError,
-)
-from dagster_quickstart.utils.helpers import (
-    load_csv_to_temp_table,
-    unregister_temp_table,
 )
 from database.ddl import (
     EXTRACT_LOOKUP,
@@ -37,7 +37,7 @@ from database.ddl import (
 if TYPE_CHECKING:
     from database.lookup_tables import LookupTableManager
 
-from ..utils.load_data import get_available_columns
+from ..utils.load_data import check_temp_table_has_data, get_available_columns
 
 
 def _build_lookup_results(
@@ -116,6 +116,66 @@ def _build_extract_lookup_query(
     )
 
 
+def _save_all_lookups_to_s3(
+    context: AssetExecutionContext,
+    duckdb: DuckDBResource,
+    all_lookup_temp_tables: Dict[str, str],
+    version_date: str,
+    lookup_manager: "LookupTableManager",
+) -> Dict[str, Dict[str, int]]:
+    """Save all lookup tables to S3 and build results dictionary.
+
+    Helper function compatible with process_csv_to_s3_with_validation style.
+    Writes all lookup temp tables to S3 via LookupTableManager and builds
+    results dictionary mapping lookup_type -> {name: row_index}.
+
+    Args:
+        context: Dagster execution context.
+        duckdb: DuckDB resource with S3 access.
+        all_lookup_temp_tables: Dictionary mapping lookup_type -> temp table name.
+        version_date: Version date for this run.
+        lookup_manager: LookupTableManager instance.
+
+    Returns:
+        Dictionary mapping lookup_type -> {name: row_index}.
+
+    Raises:
+        DatabaseQueryError: If write operation fails.
+    """
+    if not all_lookup_temp_tables:
+        context.log.warning(
+            "No lookup tables to save",
+            extra={"version_date": version_date},
+        )
+        return {}
+
+    all_results: Dict[str, Dict[str, int]] = {}
+
+    # Build results for each lookup type before saving
+    for lookup_type, temp_lookup_table in all_lookup_temp_tables.items():
+        results = _build_lookup_results(context, duckdb, temp_lookup_table, lookup_type)
+        all_results[lookup_type] = results
+        context.log.info(
+            "Extracted lookup records",
+            extra={"lookup_type": lookup_type, "record_count": len(results)},
+        )
+
+    # Write all lookup tables to S3 control table
+    lookup_manager.save_lookup_tables_to_s3(duckdb, all_lookup_temp_tables, version_date, context)
+
+    total_records = sum(len(v) for v in all_results.values())
+    context.log.info(
+        "Loaded lookup records to S3 control table",
+        extra={
+            "total_record_count": total_records,
+            "lookup_type_count": len(all_results),
+            "version_date": version_date,
+        },
+    )
+
+    return all_results
+
+
 def _extract_lookup_table_data_to_temp(
     context: AssetExecutionContext,
     duckdb: DuckDBResource,
@@ -164,8 +224,12 @@ def process_csv_to_s3_control_table_lookup_tables(
 ) -> Dict[str, Dict[str, int]]:
     """Process lookup tables from CSV to S3 control table (versioned, immutable).
 
-    Data flow: CSV → DuckDB temp table (via read_csv) → S3 Parquet control table
+    Data flow: CSV → DuckDB temp table (via load_csv_to_temp_table) →
+    extract lookup types → S3 Parquet control table.
     DuckDB views are created/updated to point to latest S3 control table version.
+
+    Uses load_csv_to_temp_table directly (consistent with process_csv_to_s3_with_validation
+    pattern) for CSV loading, then extracts multiple lookup types before saving to S3.
 
     Args:
         context: Dagster execution context.
@@ -181,24 +245,28 @@ def process_csv_to_s3_control_table_lookup_tables(
         DatabaseQueryError: If write operation fails.
         CSVValidationError: If CSV cannot be read or has no valid columns.
     """
-    context.log.info("Processing lookup tables from CSV to S3 control table (versioned)")
+    context.log.info(
+        "Processing lookup tables from CSV to S3 control table (versioned)",
+        extra={"csv_path": csv_path, "version_date": version_date},
+    )
 
-    # Load CSV directly into DuckDB temp table (no pandas)
-    temp_table = load_csv_to_temp_table(duckdb, csv_path, NULL_VALUE_REPRESENTATION, context)
+    # Load CSV directly into DuckDB staging temp table (no pandas)
+    staging_temp_table = load_csv_to_temp_table(
+        duckdb, csv_path, NULL_VALUE_REPRESENTATION, context
+    )
 
     try:
-        # Get available columns from temp table
-        available_columns = get_available_columns(duckdb, temp_table, LOOKUP_TABLE_COLUMNS)
+        # Get available columns from staging temp table
+        available_columns = get_available_columns(duckdb, staging_temp_table, LOOKUP_TABLE_COLUMNS)
 
         if not available_columns:
             raise CSVValidationError(
                 f"CSV file {csv_path} must have at least one lookup table column: {LOOKUP_TABLE_COLUMNS}"
             )
 
-        all_results: Dict[str, Dict[str, int]] = {}
         all_lookup_temp_tables: Dict[str, str] = {}
 
-        # Extract all lookup types first
+        # Extract all lookup types from staging temp table
         for lookup_type in LOOKUP_TABLE_PROCESSING_ORDER:
             if lookup_type not in available_columns:
                 continue
@@ -206,29 +274,12 @@ def process_csv_to_s3_control_table_lookup_tables(
             try:
                 # Extract distinct lookup values for this type to temp table
                 temp_lookup_table = _extract_lookup_table_data_to_temp(
-                    context, duckdb, temp_table, lookup_type
+                    context, duckdb, staging_temp_table, lookup_type
                 )
 
-                # Check if temp table has data
-                count_query = f"SELECT COUNT(*) as cnt FROM {temp_lookup_table}"
-                count_result = duckdb.execute_query(count_query)
-                has_data = (
-                    count_result is not None
-                    and not count_result.empty
-                    and count_result.iloc[0]["cnt"] > 0
-                )
-
-                if has_data:
+                # Check if temp table has data using helper function
+                if check_temp_table_has_data(duckdb, temp_lookup_table):
                     all_lookup_temp_tables[lookup_type] = temp_lookup_table
-
-                    # Build results dictionary (name -> row_index) using SQL
-                    results = _build_lookup_results(context, duckdb, temp_lookup_table, lookup_type)
-                    all_results[lookup_type] = results
-
-                    context.log.info(
-                        f"Extracted {len(results)} {lookup_type} records",
-                        extra={"lookup_type": lookup_type, "record_count": len(results)},
-                    )
                 else:
                     # Clean up empty temp table
                     unregister_temp_table(duckdb, temp_lookup_table, context)
@@ -236,26 +287,22 @@ def process_csv_to_s3_control_table_lookup_tables(
                 raise  # Re-raise domain-specific exceptions
             except Exception as e:
                 error_msg = f"Unexpected error processing {lookup_type}: {e}"
-                context.log.error(error_msg)
+                context.log.error(
+                    error_msg,
+                    extra={"lookup_type": lookup_type},
+                )
                 raise DatabaseQueryError(error_msg) from e
 
-        # Write all lookup tables to a single S3 control table file
-        if all_lookup_temp_tables:
-            # Use LookupTableManager for CRUD operations (passed from asset)
-            lookup_manager.save_lookup_tables_to_s3(
-                duckdb, all_lookup_temp_tables, version_date, context
-            )
-
-            # Note: View creation is handled in the asset function, not here
-
-            # Clean up lookup temp tables
-            for temp_lookup_table in all_lookup_temp_tables.values():
-                unregister_temp_table(duckdb, temp_lookup_table, context)
-
-        context.log.info(
-            f"Loaded {sum(len(v) for v in all_results.values())} total lookup records to S3 control table"
+        # Save all lookup tables to S3 and build results dictionary
+        all_results = _save_all_lookups_to_s3(
+            context, duckdb, all_lookup_temp_tables, version_date, lookup_manager
         )
+
+        # Clean up lookup temp tables after saving
+        for temp_lookup_table in all_lookup_temp_tables.values():
+            unregister_temp_table(duckdb, temp_lookup_table, context)
+
         return all_results
     finally:
-        # Clean up main temp table
-        unregister_temp_table(duckdb, temp_table, context)
+        # Clean up staging temp table
+        unregister_temp_table(duckdb, staging_temp_table, context)

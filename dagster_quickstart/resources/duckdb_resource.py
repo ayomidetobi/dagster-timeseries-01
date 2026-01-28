@@ -52,12 +52,16 @@ class DuckDBResource(ConfigurableResource):
     def execute_query(self, query: str, parameters: Optional[list] = None) -> pd.DataFrame:
         """Execute a query and return results as pandas DataFrame.
 
+        Always returns a pandas DataFrame. If the query returns no results or fails,
+        an empty DataFrame is returned.
+
         Args:
             query: SQL query string with ? placeholders for parameters
             parameters: Optional list of parameter values in order
 
         Returns:
-            Pandas DataFrame with query results, or empty DataFrame if no results
+            Pandas DataFrame with query results. Always returns a DataFrame, never None.
+            Returns an empty DataFrame if the query has no results or if conversion fails.
         """
         if parameters:
             result = self._con.execute(query, parameters)

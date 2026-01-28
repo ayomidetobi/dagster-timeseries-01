@@ -4,7 +4,7 @@ Uses S3 Parquet files as the system of record for control tables.
 DuckDB is used only as a query engine with views over S3 control tables.
 
 Data flow:
-- CSV → DuckDB temp table (via read_csv) → validation → S3 Parquet control table (versioned)
+- CSV → DuckDB temp table (via process_csv_to_s3_with_validation) → validation → S3 Parquet control table (versioned)
 - DuckDB views are updated to point to the latest S3 control table version.
 """
 
@@ -20,20 +20,15 @@ from dagster_quickstart.utils.constants import (
     CODE_BASED_LOOKUPS,
     LOOKUP_TABLE_PROCESSING_ORDER,
     S3_CONTROL_LOOKUP,
+    S3_CONTROL_METADATA_SERIES,
     S3_PARQUET_FILE_NAME,
 )
-
-# from dagster_quickstart.utils.exceptions import (
-#     CSVValidationError,
-#     DatabaseQueryError,  # Raised by helper functions
-#     ReferentialIntegrityError,  # Raised by validate_referential_integrity_sql
-# )
 from dagster_quickstart.utils.helpers import (
-    build_full_s3_path,
     build_s3_control_table_path,
     process_csv_to_s3_with_validation,
     validate_referential_integrity_sql,
 )
+from dagster_quickstart.utils.s3_helpers import build_full_s3_path
 from database.ddl import (
     META_SERIES_RESULTS_QUERY,
     META_SERIES_VALIDATION_CONDITION,
@@ -176,6 +171,7 @@ def _validate_meta_series_against_lookup_tables(
 ) -> None:
     """Validate meta series data against lookup tables using SQL.
 
+    Uses validate_referential_integrity_sql for consistent SQL-based validation.
     Validates that all lookup references in meta series exist in lookup tables.
     Reads directly from S3 Parquet control table instead of views, since views
     may not exist in a fresh DuckDB connection.
@@ -209,8 +205,11 @@ def process_csv_to_s3_control_table_meta_series(
 ) -> Dict[str, int]:
     """Process meta series from CSV to S3 control table (versioned, immutable).
 
-    Data flow: CSV → DuckDB temp table (via read_csv) → validation → S3 Parquet control table
+    Data flow: CSV → DuckDB temp table (via process_csv_to_s3_with_validation) →
+    validation → S3 Parquet control table.
     DuckDB view is created/updated to point to latest S3 control table version.
+
+    Uses process_csv_to_s3_with_validation for CSV loading, validation, and temp table cleanup.
 
     Args:
         context: Dagster execution context.
@@ -227,13 +226,21 @@ def process_csv_to_s3_control_table_meta_series(
         DatabaseQueryError: If write operation fails.
         CSVValidationError: If CSV cannot be read.
     """
-    context.log.info("Processing meta series from CSV to S3 control table (versioned)")
+    context.log.info(
+        "Processing meta series from CSV to S3 control table (versioned)",
+        extra={"csv_path": csv_path, "version_date": version_date},
+    )
 
     # Create wrapper function to match helper's expected signature
+    # Signature must match: Callable[[DuckDBResource, str, str, Optional[AssetExecutionContext]], str]
     def save_to_s3_wrapper(
-        duckdb: DuckDBResource, temp_table: str, version_date: str, context=None, **kwargs: Any
+        duckdb_res: DuckDBResource,
+        temp_table: str,
+        version: str,
+        context: Optional[AssetExecutionContext] = None,
+        **kwargs: Any,
     ) -> str:
-        return meta_manager.save_meta_series_to_s3(duckdb, temp_table, version_date, context)
+        return meta_manager.save_meta_series_to_s3(duckdb_res, temp_table, version, context)
 
     # Use generic helper for CSV → validate → write → create view flow
     # Note: View creation is disabled here since it's handled in the asset function
@@ -250,9 +257,6 @@ def process_csv_to_s3_control_table_meta_series(
 
     # Build results dictionary (series_code -> row_index) from saved S3 data
     # Read from S3 control table - row_index is computed based on saved order
-    from dagster_quickstart.utils.constants import S3_CONTROL_METADATA_SERIES, S3_PARQUET_FILE_NAME
-    from dagster_quickstart.utils.s3_helpers import build_full_s3_path
-
     relative_path = build_s3_control_table_path(
         S3_CONTROL_METADATA_SERIES, version_date, S3_PARQUET_FILE_NAME
     )
@@ -263,7 +267,10 @@ def process_csv_to_s3_control_table_meta_series(
     result = duckdb.execute_query(results_query)
 
     if result is None or result.empty:
-        context.log.warning("No results found in saved S3 control table")
+        context.log.warning(
+            "No results found in saved S3 control table",
+            extra={"s3_path": relative_path, "version_date": version_date},
+        )
         return {}
 
     results = {}
@@ -272,37 +279,12 @@ def process_csv_to_s3_control_table_meta_series(
         if series_code:
             results[series_code] = int(row["row_index"])
 
-    context.log.info(f"Loaded {len(results)} meta series records to S3 control table")
-    return results
-
-
-def _build_meta_series_results(
-    context: AssetExecutionContext,
-    duckdb: DuckDBResource,
-    temp_table: str,
-) -> Dict[str, int]:
-    """Build results dictionary mapping series_code -> row_index from temp table.
-
-    Uses SQL to get deterministic row indices based on order in CSV.
-
-    Args:
-        context: Dagster execution context.
-        duckdb: DuckDB resource.
-        temp_table: Temporary table name with meta series data.
-
-    Returns:
-        Dictionary mapping series_code -> row_index (1-based).
-    """
-    query = META_SERIES_RESULTS_QUERY.format(temp_table=temp_table)
-
-    result = duckdb.execute_query(query)
-    if result is None or result.empty:
-        return {}
-
-    results = {}
-    for _, row in result.iterrows():
-        series_code = str(row["series_code"]).strip()
-        if series_code:
-            results[series_code] = int(row["row_index"])
-
+    context.log.info(
+        "Loaded meta series records to S3 control table",
+        extra={
+            "record_count": len(results),
+            "s3_path": relative_path,
+            "version_date": version_date,
+        },
+    )
     return results

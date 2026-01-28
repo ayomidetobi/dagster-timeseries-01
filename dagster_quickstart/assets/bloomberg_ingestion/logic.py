@@ -17,6 +17,7 @@ from dagster_quickstart.utils.pypdl_helpers import (
     build_pypdl_request_params,
     fetch_bloomberg_data,
 )
+from dagster_quickstart.utils.summary import AssetSummary
 from dagster_quickstart.utils.summary.ingestion import (
     add_ingestion_summary_metadata,
 )
@@ -30,7 +31,7 @@ if TYPE_CHECKING:
     from database.lookup_tables import LookupTableManager
     from database.meta_series import MetaSeriesManager
 
-from .config import BloombergIngestionConfig
+from .config import BloombergIngestionConfig, IngestionMode
 
 
 def validate_bloomberg_ticker_source(
@@ -100,17 +101,20 @@ def save_bloomberg_value_data_to_s3(
         If error_reason is not None, rows_inserted will be 0
     """
     try:
+        # Build S3 path for logging
+        from dagster_quickstart.utils.s3_helpers import build_s3_value_data_path
+
+        relative_path = build_s3_value_data_path(series_code)
+
         # Log force_refresh if enabled
         if force_refresh:
-            from dagster_quickstart.utils.s3_helpers import build_s3_value_data_path
-
-            relative_path = build_s3_value_data_path(series_code)
             context.log.info(
-                f"force_refresh=True: will overwrite existing data for partition_date={target_date.date()} for {series_code}",
+                "force_refresh=True: will overwrite existing data for partition_date",
                 extra={
                     "series_code": series_code,
-                    "s3_path": relative_path,
                     "partition_date": target_date.date().isoformat(),
+                    "s3_path": relative_path,
+                    "force_refresh": force_refresh,
                 },
             )
 
@@ -126,15 +130,35 @@ def save_bloomberg_value_data_to_s3(
 
         rows_inserted = len(value_data)
         context.log.info(
-            f"Saved {rows_inserted} rows to S3 for {series_code}",
-            extra={"s3_path": s3_path},
+            "Saved Bloomberg value data to S3",
+            extra={
+                "series_code": series_code,
+                "partition_date": target_date.date().isoformat(),
+                "row_count": rows_inserted,
+                "force_refresh": force_refresh,
+                "s3_path": s3_path,
+            },
         )
         return rows_inserted, None
     except (DatabaseError, ValueError, TypeError) as e:
-        context.log.error(f"Error saving data to S3 for {series_code}: {e}")
+        context.log.error(
+            "Error saving Bloomberg value data to S3",
+            extra={
+                "series_code": series_code,
+                "partition_date": target_date.date().isoformat(),
+                "error": str(e),
+            },
+        )
         return 0, str(e)
     except Exception as e:
-        context.log.error(f"Unexpected error saving data to S3 for {series_code}: {e}")
+        context.log.error(
+            "Unexpected error saving Bloomberg value data to S3",
+            extra={
+                "series_code": series_code,
+                "partition_date": target_date.date().isoformat(),
+                "error": str(e),
+            },
+        )
         return 0, f"unexpected error: {e}"
 
 
@@ -150,36 +174,53 @@ def ingest_bloomberg_data_for_series(
 ) -> Optional[Dict[str, Any]]:
     """Unified Bloomberg data ingestion using PyPDL bulk logic for single or multiple series.
 
-    Uses bulk logic for both daily (single series from partition) and bulk (multiple series from config) modes.
-    Mode is determined by config.mode: "daily" uses partition series_code, "bulk" uses config.series_codes.
+    Uses bulk logic for both IngestionMode.DAILY (single series from partition) and
+    IngestionMode.BULK (multiple series from config) modes.
+    Mode is determined by config.mode: IngestionMode.DAILY uses partition series_code,
+    IngestionMode.BULK uses config.series_codes.
 
     Args:
         context: Dagster execution context
         config: Bloomberg ingestion configuration
         pypdl_resource: PyPDL resource
         duckdb: DuckDB resource
-        series_code: Series code from partition (used when mode="daily")
+        series_code: Series code from partition (used when mode=IngestionMode.DAILY)
         target_date: Target date for data ingestion (from partition key)
         meta_manager: MetaSeriesManager instance (initialized in asset)
         lookup_manager: LookupTableManager instance (initialized in asset)
 
     Returns:
-        Result dictionary with ingestion results, or None if skipped/failed
-        For bulk mode, returns aggregate result
+        Result dictionary with ingestion results, or None if skipped/failed.
+        For IngestionMode.BULK, returns aggregate result.
     """
     # Determine series codes based on mode
-    if config.mode == "bulk":
+    if config.mode == IngestionMode.BULK:
         if not config.series_codes:
-            context.log.error("mode='bulk' but series_codes is empty")
+            context.log.error(
+                "mode is BULK but series_codes is empty",
+                extra={"mode": config.mode.value, "ingestion_mode": IngestionMode.BULK.value},
+            )
             return None
         series_codes_to_ingest = config.series_codes
         context.log.info(
-            f"Bulk mode: ingesting {len(series_codes_to_ingest)} series from config (date: {target_date.date()})"
+            "Bulk mode: ingesting series from config",
+            extra={
+                "mode": config.mode.value,
+                "ingestion_mode": IngestionMode.BULK.value,
+                "series_count": len(series_codes_to_ingest),
+                "target_date": target_date.date().isoformat(),
+            },
         )
-    else:  # mode == "daily"
+    else:  # mode == IngestionMode.DAILY
         series_codes_to_ingest = [series_code]
         context.log.info(
-            f"Daily mode: ingesting single series {series_code} from partition (date: {target_date.date()})"
+            "Daily mode: ingesting single series from partition",
+            extra={
+                "mode": config.mode.value,
+                "ingestion_mode": IngestionMode.DAILY.value,
+                "series_code": series_code,
+                "target_date": target_date.date().isoformat(),
+            },
         )
 
     # Step 1: Get and validate all series metadata
@@ -434,17 +475,41 @@ def ingest_bloomberg_data_for_series(
                 successful_count += 1
 
     # Return result based on mode
-    if config.mode == "daily":
+    if config.mode == IngestionMode.DAILY:
         # For daily mode, return single result
         if series_code in all_results:
             return all_results[series_code]
         return None
-    else:
+    else:  # mode == IngestionMode.BULK
         # For bulk mode, return aggregate result
+        total_series_count = len(series_codes_to_ingest)
+
         context.log.info(
-            f"Bulk ingestion completed: {successful_count} successful, {failed_count} failed, "
-            f"{total_rows} total rows inserted"
+            "Bulk ingestion completed",
+            extra={
+                "mode": config.mode.value,
+                "ingestion_mode": IngestionMode.BULK.value,
+                "successful_count": successful_count,
+                "failed_count": failed_count,
+                "total_rows": total_rows,
+                "total_series": total_series_count,
+            },
         )
+
+        # Create aggregate AssetSummary for bulk ingestion outcome
+        bulk_summary = AssetSummary(
+            total_series=total_series_count,
+            successful_count=successful_count,
+            failed_count=failed_count,
+            total_rows=total_rows,
+            target_date=target_date,
+            asset_type="ingestion",
+            asset_metadata={
+                "mode": config.mode.value,
+                "ingestion_mode": IngestionMode.BULK.value,
+            },
+        )
+        bulk_summary.add_to_context(context)
 
         if successful_count == 0:
             return None
@@ -456,7 +521,7 @@ def ingest_bloomberg_data_for_series(
         if first_success:
             return {
                 **first_success,
-                "total_series": len(series_codes_to_ingest),
+                "total_series": total_series_count,
                 "successful_count": successful_count,
                 "failed_count": failed_count,
                 "total_rows": total_rows,

@@ -147,3 +147,49 @@ READ_PARQUET_SCHEMA = "SELECT * FROM read_parquet('{full_s3_path}') LIMIT 0"
 # Pattern for checking if a column is not null and not empty
 # Placeholders: {column_name}
 NOT_NULL_AND_NOT_EMPTY = "{column_name} IS NOT NULL AND {column_name} != ''"
+
+# ============================================================================
+# Dependency SQL Templates
+# ============================================================================
+
+# Template for dependency validation query (checks referential integrity)
+# Placeholders: {temp_table}
+DEPENDENCY_VALIDATION_QUERY = """
+    SELECT 
+        d.parent_series_code,
+        d.child_series_code,
+        CASE 
+            WHEN p.series_id IS NULL THEN 'Parent series not found: ' || d.parent_series_code
+            WHEN c.series_id IS NULL THEN 'Child series not found: ' || d.child_series_code
+            ELSE NULL
+        END AS error_message
+    FROM {temp_table} d
+    LEFT JOIN metaSeries p ON d.parent_series_code = p.series_code
+    LEFT JOIN metaSeries c ON d.child_series_code = c.series_code
+    WHERE p.series_id IS NULL OR c.series_id IS NULL
+"""
+
+# Template for creating enriched dependency table with series IDs
+# Placeholders: {enriched_table}, {temp_table}, {calc_type_expr}
+DEPENDENCY_ENRICHED_TABLE_QUERY = """
+    CREATE TEMP TABLE {enriched_table} AS
+    SELECT 
+        row_number() OVER (ORDER BY p.series_id, c.series_id) AS dependency_id,
+        d.parent_series_code,
+        d.child_series_code,
+        p.series_id AS parent_series_id,
+        c.series_id AS child_series_id,
+        {calc_type_expr}
+    FROM {temp_table} d
+    INNER JOIN metaSeries p ON d.parent_series_code = p.series_code
+    INNER JOIN metaSeries c ON d.child_series_code = c.series_code
+"""
+
+# Template for building dependency results query (dependency_id -> row_index)
+# Placeholders: {temp_table}
+DEPENDENCY_RESULTS_QUERY = """
+    SELECT 
+        row_number() OVER (ORDER BY parent_series_id, child_series_id) AS dependency_id,
+        row_number() OVER (ORDER BY parent_series_id, child_series_id) AS row_index
+    FROM {temp_table}
+"""
