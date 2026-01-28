@@ -104,9 +104,7 @@ def add_child_series_partitions_sensor(
         existing_partitions = set(context.instance.get_dynamic_partitions(partition_name))
 
         # Find new partitions to add
-        partitions_to_add = [
-            code for code in child_series_codes if code not in existing_partitions
-        ]
+        partitions_to_add = [code for code in child_series_codes if code not in existing_partitions]
 
         if not partitions_to_add:
             context.log.info(
@@ -121,9 +119,7 @@ def add_child_series_partitions_sensor(
         )
 
         # Build request to add new partitions
-        dynamic_partitions_request = CHILD_SERIES_PARTITION.build_add_request(
-            partitions_to_add
-        )
+        dynamic_partitions_request = CHILD_SERIES_PARTITION.build_add_request(partitions_to_add)
 
         return SensorResult(
             run_requests=[],
@@ -131,7 +127,5 @@ def add_child_series_partitions_sensor(
         )
 
     except Exception as e:
-        context.log.error(
-            f"Failed to update child-series partitions: {e}", exc_info=True
-        )
+        context.log.error(f"Failed to update child-series partitions: {e}", exc_info=True)
         return SkipReason(f"Error adding partitions: {e}")

@@ -144,6 +144,20 @@ def calculate_derived_series_logic(
     derived_series_id = derived_series["series_id"]
     derived_series_code = derived_series["series_code"]
 
+    # Determine effective date range for calculation (from config or partition date)
+    range_start, range_end = config.get_date_range(target_date)
+    if range_start > range_end:
+        raise CalculationError(
+            f"start_date ({range_start.date()}) must be <= end_date ({range_end.date()})"
+        )
+
+    context.log.info(
+        "Using calculation date range %s to %s for derived series %s",
+        range_start.date(),
+        range_end.date(),
+        derived_series_code,
+    )
+
     # Get parent dependencies (ordered by dependency_id for consistent entry ordering)
     parent_deps = dep_manager.get_parent_dependencies(derived_series_id)
     parent_deps.sort(key=lambda x: x.get("dependency_id", 0))
@@ -179,11 +193,12 @@ def calculate_derived_series_logic(
         # Validate parent series exist in metaSeries
         validate_parent_series_in_metaseries(parent_series_result, derived_series_code)
 
-        # Build UNION ALL query to load parent data for target date only
+        # Build UNION ALL query to load parent data for the configured date range
         union_parts = build_union_query_for_parents(
             duckdb=duckdb,
             parent_series_result=parent_series_result,
-            target_date=target_date,
+            start_date=range_start,
+            end_date=range_end,
         )
 
         # Build and execute complete SQL query that performs pivot and calculation in DuckDB

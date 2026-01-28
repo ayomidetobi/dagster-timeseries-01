@@ -41,9 +41,7 @@ def build_s3_control_table_path(
     return f"{S3_BASE_PATH_CONTROL}/{control_type}/{S3_VERSION_PREFIX}{version_date}/{filename}"
 
 
-def build_s3_value_data_path(
-    series_code: str, filename: str = S3_PARQUET_FILE_NAME
-) -> str:
+def build_s3_value_data_path(series_code: str, filename: str = S3_PARQUET_FILE_NAME) -> str:
     """Build relative S3 path for unified value data Parquet file.
 
     Value data is stored in a single file per series_code, ordered by timestamp.
@@ -163,7 +161,9 @@ def save_value_data_to_s3(
         try:
             result = duckdb.execute_query(existing_data_query)
             if result is not None and not result.empty:
-                count = result.iloc[0]["count"] if hasattr(result, "iloc") else result["count"].iloc[0]
+                count = (
+                    result.iloc[0]["count"] if hasattr(result, "iloc") else result["count"].iloc[0]
+                )
                 has_existing_data = count > 0
         except Exception:
             # File doesn't exist, proceed with new data only
@@ -172,7 +172,7 @@ def save_value_data_to_s3(
         if has_existing_data:
             # Read existing data into temp table
             partition_date_str = partition_date.strftime("%Y-%m-%d")
-            
+
             if force_refresh:
                 # Filter out existing data for this partition_date
                 create_existing_table_sql = f"""
@@ -219,10 +219,14 @@ def save_value_data_to_s3(
             duckdb.execute_command(create_merged_table_sql)
 
             # Use merged table for saving
-            select_query = f"SELECT series_id, timestamp, value FROM {temp_table_merged} ORDER BY timestamp"
+            select_query = (
+                f"SELECT series_id, timestamp, value FROM {temp_table_merged} ORDER BY timestamp"
+            )
         else:
             # No existing data, use new data only
-            select_query = f"SELECT series_id, timestamp, value FROM {temp_table_new} ORDER BY timestamp"
+            select_query = (
+                f"SELECT series_id, timestamp, value FROM {temp_table_new} ORDER BY timestamp"
+            )
 
         # Write to S3 using DuckDBResource.save()
         success = duckdb.save(

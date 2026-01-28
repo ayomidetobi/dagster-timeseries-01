@@ -4,10 +4,8 @@ Uses the same DuckDB configuration as Dagster (reads from environment variables)
 Edit the configuration section below with your series_code.
 """
 
-from datetime import datetime
 from pathlib import Path
 
-import pandas as pd
 from decouple import config
 
 # ============================================================================
@@ -25,7 +23,6 @@ project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
 from dagster_quickstart.resources.duckdb_datacacher import duckdb_datacacher
-from dagster_quickstart.resources.duckdb_resource import DuckDBResource
 from dagster_quickstart.utils.database_config import get_database_resource
 from dagster_quickstart.utils.s3_helpers import (
     build_full_s3_path,
@@ -106,7 +103,7 @@ def main():
         print()
 
         if "timestamp" in df.columns:
-            print(f"Date range:")
+            print("Date range:")
             print(f"  Min timestamp: {df['timestamp'].min()}")
             print(f"  Max timestamp: {df['timestamp'].max()}")
             print()

@@ -17,7 +17,8 @@ from dagster_quickstart.utils.s3_helpers import (
 def build_union_query_for_parents(
     duckdb: DuckDBResource,
     parent_series_result: pd.DataFrame,
-    target_date: datetime,
+    start_date: datetime,
+    end_date: datetime,
 ) -> List[str]:
     """Build UNION ALL query parts for loading parent series data from S3.
 
@@ -27,7 +28,8 @@ def build_union_query_for_parents(
     Args:
         duckdb: DuckDB resource with S3 access
         parent_series_result: DataFrame with columns parent_series_id and parent_series_code
-        target_date: Target date for filtering data (only data <= target_date is loaded)
+        start_date: Start date for filtering data (inclusive)
+        end_date: End date for filtering data (inclusive)
 
     Returns:
         List of SQL SELECT statement strings, one per parent series
@@ -45,14 +47,15 @@ def build_union_query_for_parents(
         relative_path = build_s3_value_data_path(parent_series_code)
         full_s3_path = build_full_s3_path(duckdb, relative_path)
 
-        # Load data for target date only (filter to target date or earlier)
+        # Load data for the specified date range (inclusive)
         union_parts.append(f"""
             SELECT 
                 timestamp, 
                 value,
                 {parent_series_id} as parent_series_id
             FROM read_parquet('{full_s3_path}')
-            WHERE timestamp <= '{target_date.isoformat()}'
+            WHERE timestamp >= '{start_date.isoformat()}'
+              AND timestamp <= '{end_date.isoformat()}'
         """)
 
     if not union_parts:

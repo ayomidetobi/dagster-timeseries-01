@@ -3,7 +3,7 @@
 Uses the same DuckDB configuration as Dagster (reads from environment variables).
 Usage:
     python test_read_s3_value_data.py --series-code AAPL_US_EQ [--output output.csv]
-    
+
 Environment variables (same as Dagster):
     S3_BUCKET - S3 bucket name
     S3_ACCESS_KEY - S3 access key
@@ -24,7 +24,6 @@ project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
 from dagster_quickstart.resources.duckdb_datacacher import duckdb_datacacher
-from dagster_quickstart.resources.duckdb_resource import DuckDBResource
 from dagster_quickstart.utils.database_config import get_database_resource
 from dagster_quickstart.utils.s3_helpers import (
     build_full_s3_path,
@@ -126,9 +125,7 @@ def save_to_file(df: pd.DataFrame, output_path: str, format: str = "csv"):
 
 def main():
     """Main function."""
-    parser = argparse.ArgumentParser(
-        description="Read value data from S3 and save to local file"
-    )
+    parser = argparse.ArgumentParser(description="Read value data from S3 and save to local file")
     parser.add_argument(
         "--series-code",
         required=True,
@@ -174,13 +171,13 @@ def main():
         print(f"Total rows: {len(df)}")
         if not df.empty:
             print(f"Columns: {', '.join(df.columns)}")
-            print(f"\nFirst few rows:")
+            print("\nFirst few rows:")
             print(df.head(10).to_string())
-            print(f"\nDate range:")
+            print("\nDate range:")
             if "timestamp" in df.columns:
                 print(f"  Min timestamp: {df['timestamp'].min()}")
                 print(f"  Max timestamp: {df['timestamp'].max()}")
-            print(f"\nValue statistics:")
+            print("\nValue statistics:")
             if "value" in df.columns:
                 print(df["value"].describe())
 

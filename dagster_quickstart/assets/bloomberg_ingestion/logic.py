@@ -19,7 +19,6 @@ from dagster_quickstart.utils.pypdl_helpers import (
 )
 from dagster_quickstart.utils.summary.ingestion import (
     add_ingestion_summary_metadata,
-    handle_ingestion_failure,
 )
 from dagster_quickstart.utils.validation_helpers import (
     validate_field_type_name,
@@ -108,7 +107,11 @@ def save_bloomberg_value_data_to_s3(
             relative_path = build_s3_value_data_path(series_code)
             context.log.info(
                 f"force_refresh=True: will overwrite existing data for partition_date={target_date.date()} for {series_code}",
-                extra={"series_code": series_code, "s3_path": relative_path, "partition_date": target_date.date().isoformat()},
+                extra={
+                    "series_code": series_code,
+                    "s3_path": relative_path,
+                    "partition_date": target_date.date().isoformat(),
+                },
             )
 
         # Save to S3 using helper function
@@ -145,144 +148,319 @@ def ingest_bloomberg_data_for_series(
     meta_manager: "MetaSeriesManager",  # type: ignore[name-defined]
     lookup_manager: "LookupTableManager",  # type: ignore[name-defined]
 ) -> Optional[Dict[str, Any]]:
-    """Internal function for Bloomberg data ingestion using PyPDL for a single series and date.
+    """Unified Bloomberg data ingestion using PyPDL bulk logic for single or multiple series.
 
-    This function orchestrates the Bloomberg data ingestion process by calling
-    smaller, reusable helper functions for each step.
+    Uses bulk logic for both daily (single series from partition) and bulk (multiple series from config) modes.
+    Mode is determined by config.mode: "daily" uses partition series_code, "bulk" uses config.series_codes.
 
     Args:
         context: Dagster execution context
         config: Bloomberg ingestion configuration
         pypdl_resource: PyPDL resource
         duckdb: DuckDB resource
-        series_code: Series code to ingest (from partition key)
+        series_code: Series code from partition (used when mode="daily")
         target_date: Target date for data ingestion (from partition key)
         meta_manager: MetaSeriesManager instance (initialized in asset)
         lookup_manager: LookupTableManager instance (initialized in asset)
 
     Returns:
         Result dictionary with ingestion results, or None if skipped/failed
+        For bulk mode, returns aggregate result
     """
-    # Get and validate series exists by code
-    series = meta_manager.get_meta_series_by_code(series_code)
-    if not series:
-        context.log.error(f"Series with code {series_code} not found")
-        return handle_ingestion_failure(
-            series_code, target_date, context, f"series {series_code} not found"
+    # Determine series codes based on mode
+    if config.mode == "bulk":
+        if not config.series_codes:
+            context.log.error("mode='bulk' but series_codes is empty")
+            return None
+        series_codes_to_ingest = config.series_codes
+        context.log.info(
+            f"Bulk mode: ingesting {len(series_codes_to_ingest)} series from config (date: {target_date.date()})"
+        )
+    else:  # mode == "daily"
+        series_codes_to_ingest = [series_code]
+        context.log.info(
+            f"Daily mode: ingesting single series {series_code} from partition (date: {target_date.date()})"
         )
 
-    series_id = series.get("series_id")
-    if not series_id:
-        context.log.error(f"Series {series_code} has no series_id")
-        return handle_ingestion_failure(
-            series_code, target_date, context, f"series {series_code} has no series_id", series
-        )
-
-    context.log.info(
-        "Starting Bloomberg data ingestion for series_code=%s (series_id=%s, date: %s)",
-        series_code,
-        series_id,
-        target_date.date(),
-    )
-
-    # Validate Bloomberg ticker source
-    skip_reason = validate_bloomberg_ticker_source(
-        series, lookup_manager, series_id, series_code, context
-    )
-    if skip_reason:
-        add_ingestion_summary_metadata(
-            series, series_id, series_code, 0, target_date, context, "skipped", skip_reason
-        )
-        return create_ingestion_result_dict(series_id, series_code, 0, "skipped", skip_reason)
-
-    # Validate series metadata (ticker and field_type name)
-    ticker, field_type_name, error_reason = validate_series_metadata(
-        series, series_id, series_code, context
-    )
-    if error_reason or ticker is None or field_type_name is None:
-        reason = error_reason or "missing metadata"
-        add_ingestion_summary_metadata(
-            series, series_id, series_code, 0, target_date, context, "skipped", reason
-        )
-        return create_ingestion_result_dict(series_id, series_code, 0, "skipped", reason)
-
-    # Validate field type name using ReferentialIntegrityValidator
+    # Step 1: Get and validate all series metadata
+    series_metadata: Dict[
+        str, Dict[str, Any]
+    ] = {}  # series_code -> {series, series_id, ticker, field_name}
     validator = ReferentialIntegrityValidator(duckdb)
-    field_name = validate_field_type_name(
-        validator, field_type_name, series_id, series_code, context
-    )
-    if not field_name:
-        reason = "field_type_name not found or invalid"
-        add_ingestion_summary_metadata(
-            series, series_id, series_code, 0, target_date, context, "skipped", reason
+
+    for sc in series_codes_to_ingest:
+        series = meta_manager.get_meta_series_by_code(sc)
+        if not series:
+            context.log.warning(f"Series {sc} not found, skipping")
+            continue
+
+        series_id = series.get("series_id")
+        if not series_id:
+            context.log.warning(f"Series {sc} has no series_id, skipping")
+            continue
+
+        # Validate Bloomberg ticker source
+        skip_reason = validate_bloomberg_ticker_source(
+            series, lookup_manager, series_id, sc, context
         )
-        return create_ingestion_result_dict(series_id, series_code, 0, "skipped", reason)
+        if skip_reason:
+            context.log.warning(f"Series {sc} skipped: {skip_reason}")
+            continue
 
-    # Build PyPDL request parameters
-    data_source, data_code, start_date, end_date = build_pypdl_request_params(
-        field_name, ticker, target_date
-    )
-
-    # Fetch data from Bloomberg via PyPDL
-    data_points, fetch_error = fetch_bloomberg_data(
-        pypdl_resource,
-        data_code,
-        data_source,
-        start_date,
-        end_date,
-        series_code,
-        context,
-        use_dummy_data=config.use_dummy_data,
-    )
-    if fetch_error:
-        add_ingestion_summary_metadata(
-            series, series_id, series_code, 0, target_date, context, "failed", fetch_error
+        # Validate series metadata
+        ticker, field_type_name, error_reason = validate_series_metadata(
+            series, series_id, sc, context
         )
-        return create_ingestion_result_dict(series_id, series_code, 0, "failed", fetch_error)
+        if error_reason or ticker is None or field_type_name is None:
+            context.log.warning(f"Series {sc} skipped: {error_reason or 'missing metadata'}")
+            continue
 
-    if not data_points:
-        context.log.warning(f"No data points for {series_code} ({data_code})")
-        add_ingestion_summary_metadata(
-            series, series_id, series_code, 0, target_date, context, "skipped", "no data"
+        # Validate field type name
+        field_name = validate_field_type_name(validator, field_type_name, series_id, sc, context)
+        if not field_name:
+            context.log.warning(f"Series {sc} skipped: field_type_name not found or invalid")
+            continue
+
+        series_metadata[sc] = {
+            "series": series,
+            "series_id": series_id,
+            "ticker": ticker,
+            "field_name": field_name,
+        }
+
+    if not series_metadata:
+        context.log.error("No valid series found for ingestion")
+        return None
+
+    context.log.info(f"Validated {len(series_metadata)} series for ingestion")
+
+    # Step 2: Group series by field_name (different field types need different data_source paths)
+    # Also create ticker -> series_code mapping
+    series_by_field: Dict[
+        str, List[Tuple[str, str]]
+    ] = {}  # field_name -> [(series_code, ticker), ...]
+    ticker_to_series_code: Dict[str, str] = {}  # ticker -> series_code
+    for sc, metadata in series_metadata.items():
+        field_name = metadata["field_name"]
+        ticker = metadata["ticker"]
+        if field_name not in series_by_field:
+            series_by_field[field_name] = []
+        series_by_field[field_name].append((sc, ticker))
+        ticker_to_series_code[ticker] = sc
+
+    # Step 3: Fetch data in bulk for each field_type group
+    all_results: Dict[str, Dict[str, Any]] = {}  # series_code -> result dict
+    total_rows = 0
+    successful_count = 0
+    failed_count = 0
+
+    for field_name, series_tickers in series_by_field.items():
+        # Extract tickers and series codes
+        tickers = [ticker for _, ticker in series_tickers]
+        codes_for_field = [code for code, _ in series_tickers]
+
+        context.log.info(
+            f"Fetching bulk data for {len(tickers)} series with field_type={field_name}"
         )
-        return create_ingestion_result_dict(series_id, series_code, 0, "skipped", "no data")
 
-    # Check if data already exists in S3
-    if check_existing_value_data_in_s3(
-        duckdb, series_code, target_date, config.force_refresh, context
-    ):
-        add_ingestion_summary_metadata(
-            series, series_id, series_code, 0, target_date, context, "skipped", "data exists"
+        # Build PyPDL request parameters
+        data_source, data_codes, start_date, end_date = build_pypdl_request_params(
+            field_name, tickers, target_date, target_date
         )
-        return create_ingestion_result_dict(series_id, series_code, 0, "skipped", "data exists")
 
-    # Process and validate data points
-    value_data = process_time_series_data_points(data_points, series_id, series_code, context)
-
-    if not value_data:
-        context.log.warning(f"No valid data points after processing for {series_code}")
-        add_ingestion_summary_metadata(
-            series, series_id, series_code, 0, target_date, context, "skipped", "no valid data"
+        # Fetch data from Bloomberg via PyPDL (bulk call - works for single or multiple)
+        data_by_code, fetch_error = fetch_bloomberg_data(
+            pypdl_resource,
+            data_codes,
+            data_source,
+            start_date,
+            end_date,
+            series_code=codes_for_field,
+            context=context,
+            use_dummy_data=config.use_dummy_data,
         )
-        return create_ingestion_result_dict(series_id, series_code, 0, "skipped", "no valid data")
 
-    # Save data to S3
-    rows_inserted, insert_error = save_bloomberg_value_data_to_s3(
-        duckdb,
-        value_data,
-        series_code,
-        target_date,
-        config.force_refresh,
-        context,
-    )
-    if insert_error:
-        add_ingestion_summary_metadata(
-            series, series_id, series_code, 0, target_date, context, "failed", insert_error
+        if fetch_error:
+            context.log.error(f"Bulk fetch failed for field_type={field_name}: {fetch_error}")
+            # Mark all series in this group as failed
+            for sc in codes_for_field:
+                metadata = series_metadata[sc]
+                add_ingestion_summary_metadata(
+                    metadata["series"],
+                    metadata["series_id"],
+                    sc,
+                    0,
+                    target_date,
+                    context,
+                    "failed",
+                    fetch_error,
+                )
+                all_results[sc] = create_ingestion_result_dict(
+                    metadata["series_id"], sc, 0, "failed", fetch_error
+                )
+                failed_count += 1
+            continue
+
+        # Handle both single (List) and bulk (Dict) responses
+        if isinstance(data_by_code, list):
+            # Single series response - convert to dict format
+            if len(codes_for_field) == 1 and len(tickers) == 1:
+                data_by_code = {tickers[0]: data_by_code}
+            else:
+                context.log.error(f"Unexpected list response for {len(codes_for_field)} series")
+                continue
+
+        if not isinstance(data_by_code, dict):
+            context.log.warning(f"No data returned for field_type={field_name}")
+            continue
+
+        # Step 4: Process and save each series's data to its respective S3 path
+        # data_by_code maps ticker (data_code) -> data points (List[Dict])
+        for ticker, data_points_list in data_by_code.items():
+            # Map ticker back to series_code
+            sc = ticker_to_series_code.get(ticker)
+            if not sc:
+                context.log.warning(f"Ticker {ticker} not found in series metadata, skipping")
+                continue
+
+            metadata = series_metadata[sc]
+            series_id = metadata["series_id"]
+
+            # Ensure data_points_list is a list
+            if not isinstance(data_points_list, list):
+                context.log.warning(
+                    f"Expected list of data points for {sc} ({ticker}), got {type(data_points_list)}, skipping"
+                )
+                continue
+
+            # Type narrowing: data_points_list is confirmed to be List[Dict[str, Any]]
+            data_points: List[Dict[str, Any]] = data_points_list
+
+            if not data_points:
+                context.log.warning(f"No data points for {sc} ({ticker})")
+                add_ingestion_summary_metadata(
+                    metadata["series"],
+                    series_id,
+                    sc,
+                    0,
+                    target_date,
+                    context,
+                    "skipped",
+                    "no data",
+                )
+                all_results[sc] = create_ingestion_result_dict(
+                    series_id, sc, 0, "skipped", "no data"
+                )
+                continue
+
+            # Check if data already exists in S3
+            if check_existing_value_data_in_s3(
+                duckdb, sc, target_date, config.force_refresh, context
+            ):
+                add_ingestion_summary_metadata(
+                    metadata["series"],
+                    series_id,
+                    sc,
+                    0,
+                    target_date,
+                    context,
+                    "skipped",
+                    "data exists",
+                )
+                all_results[sc] = create_ingestion_result_dict(
+                    series_id, sc, 0, "skipped", "data exists"
+                )
+                continue
+
+            # Process and validate data points
+            value_data = process_time_series_data_points(data_points, series_id, sc, context)
+
+            if not value_data:
+                context.log.warning(f"No valid data points after processing for {sc}")
+                add_ingestion_summary_metadata(
+                    metadata["series"],
+                    series_id,
+                    sc,
+                    0,
+                    target_date,
+                    context,
+                    "skipped",
+                    "no valid data",
+                )
+                all_results[sc] = create_ingestion_result_dict(
+                    series_id, sc, 0, "skipped", "no valid data"
+                )
+                continue
+
+            # Save data to S3 for this series
+            rows_inserted, insert_error = save_bloomberg_value_data_to_s3(
+                duckdb,
+                value_data,
+                sc,
+                target_date,
+                config.force_refresh,
+                context,
+            )
+
+            if insert_error:
+                add_ingestion_summary_metadata(
+                    metadata["series"],
+                    series_id,
+                    sc,
+                    0,
+                    target_date,
+                    context,
+                    "failed",
+                    insert_error,
+                )
+                all_results[sc] = create_ingestion_result_dict(
+                    series_id, sc, 0, "failed", insert_error
+                )
+                failed_count += 1
+            else:
+                add_ingestion_summary_metadata(
+                    metadata["series"],
+                    series_id,
+                    sc,
+                    rows_inserted,
+                    target_date,
+                    context,
+                    "success",
+                )
+                all_results[sc] = create_ingestion_result_dict(
+                    series_id, sc, rows_inserted, "success"
+                )
+                total_rows += rows_inserted
+                successful_count += 1
+
+    # Return result based on mode
+    if config.mode == "daily":
+        # For daily mode, return single result
+        if series_code in all_results:
+            return all_results[series_code]
+        return None
+    else:
+        # For bulk mode, return aggregate result
+        context.log.info(
+            f"Bulk ingestion completed: {successful_count} successful, {failed_count} failed, "
+            f"{total_rows} total rows inserted"
         )
-        return create_ingestion_result_dict(series_id, series_code, 0, "failed", insert_error)
 
-    # Add summary metadata and return success result
-    add_ingestion_summary_metadata(
-        series, series_id, series_code, rows_inserted, target_date, context, "success"
-    )
-    return create_ingestion_result_dict(series_id, series_code, rows_inserted, "success")
+        if successful_count == 0:
+            return None
+
+        # Return aggregate result (using first successful series as base)
+        first_success = next(
+            (r for r in all_results.values() if r.get("status") == "success"), None
+        )
+        if first_success:
+            return {
+                **first_success,
+                "total_series": len(series_codes_to_ingest),
+                "successful_count": successful_count,
+                "failed_count": failed_count,
+                "total_rows": total_rows,
+                "all_results": all_results,
+            }
+
+        return None
