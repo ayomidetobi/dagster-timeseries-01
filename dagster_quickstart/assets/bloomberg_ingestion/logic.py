@@ -43,49 +43,44 @@ from .config import BloombergIngestionConfig, IngestionMode
 
 def resolve_series_codes(
     config: BloombergIngestionConfig,
-    series_code_from_partition: str,
+    series_code_from_partition: Optional[str],
     target_date: datetime,
     context: AssetExecutionContext,
 ) -> Optional[List[str]]:
-    """Resolve series codes based on ingestion mode.
+    """Resolve series codes from config.
+
+    Series codes should be determined in the assets file before calling this function.
+    This function validates that series_codes are available in config.
 
     Args:
-        config: Bloomberg ingestion configuration
-        series_code_from_partition: Series code from partition (for DAILY mode)
+        config: Bloomberg ingestion configuration (should have series_codes populated)
+        series_code_from_partition: Series code from partition (for logging, optional)
         target_date: Target date for logging
         context: Dagster execution context
 
     Returns:
         List of series codes to ingest, or None if misconfigured
     """
-    if config.mode == IngestionMode.BULK:
-        if not config.series_codes:
-            context.log.error(
-                "mode is BULK but series_codes is empty",
-                extra={"mode": config.mode.value, "ingestion_mode": IngestionMode.BULK.value},
-            )
-            return None
-        series_codes_to_ingest = config.series_codes
-        context.log.info(
-            "Bulk mode: ingesting series from config",
+    if not config.series_codes:
+        context.log.error(
+            "series_codes is empty in config",
             extra={
                 "mode": config.mode.value,
-                "ingestion_mode": IngestionMode.BULK.value,
-                "series_count": len(series_codes_to_ingest),
                 "target_date": target_date.date().isoformat(),
             },
         )
-    else:  # mode == IngestionMode.DAILY
-        series_codes_to_ingest = [series_code_from_partition]
-        context.log.info(
-            "Daily mode: ingesting single series from partition",
-            extra={
-                "mode": config.mode.value,
-                "ingestion_mode": IngestionMode.DAILY.value,
-                "series_code": series_code_from_partition,
-                "target_date": target_date.date().isoformat(),
-            },
-        )
+        return None
+
+    series_codes_to_ingest = config.series_codes
+    context.log.info(
+        "Using series codes from config",
+        extra={
+            "mode": config.mode.value,
+            "series_count": len(series_codes_to_ingest),
+            "target_date": target_date.date().isoformat(),
+            "series_code_from_partition": series_code_from_partition,
+        },
+    )
     return series_codes_to_ingest
 
 
@@ -471,10 +466,10 @@ def finalize_bulk_result(
     total_series_count = len(all_results)
 
     context.log.info(
-        "Bulk ingestion completed",
+        "Backfill ingestion completed",
         extra={
             "mode": config.mode.value,
-            "ingestion_mode": IngestionMode.BULK.value,
+            "ingestion_mode": IngestionMode.BACKFILL.value,
             "successful_count": successful_count,
             "failed_count": failed_count,
             "total_rows": total_rows,
@@ -482,7 +477,7 @@ def finalize_bulk_result(
         },
     )
 
-    # Create aggregate AssetSummary for bulk ingestion outcome
+    # Create aggregate AssetSummary for backfill ingestion outcome
     bulk_summary = AssetSummary(
         total_series=total_series_count,
         successful_count=successful_count,
@@ -492,7 +487,7 @@ def finalize_bulk_result(
         asset_type="ingestion",
         asset_metadata={
             "mode": config.mode.value,
-            "ingestion_mode": IngestionMode.BULK.value,
+            "ingestion_mode": IngestionMode.BACKFILL.value,
         },
     )
     bulk_summary.add_to_context(context)
@@ -648,35 +643,41 @@ def ingest_bloomberg_data_for_series(
     config: BloombergIngestionConfig,
     pypdl_resource: PyPDLResource,
     duckdb: DuckDBResource,
-    series_code: str,
+    series_codes_to_ingest: List[str],
     target_date: datetime,
     meta_manager: "MetaSeriesManager",  # type: ignore[name-defined]
     lookup_manager: "LookupTableManager",  # type: ignore[name-defined]
+    series_code: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Unified Bloomberg data ingestion using PyPDL bulk logic for single or multiple series.
 
-    Uses bulk logic for both IngestionMode.DAILY (single series from partition) and
-    IngestionMode.BULK (multiple series from config) modes.
-    Mode is determined by config.mode: IngestionMode.DAILY uses partition series_code,
-    IngestionMode.BULK uses config.series_codes.
+    Uses bulk logic for both IngestionMode.DAILY (single series from partition or database) and
+    IngestionMode.BACKFILL (multiple series from config) modes.
+    Series codes are determined in the assets file and passed directly to this function.
 
     Args:
         context: Dagster execution context
         config: Bloomberg ingestion configuration
         pypdl_resource: PyPDL resource
         duckdb: DuckDB resource
-        series_code: Series code from partition (used when mode=IngestionMode.DAILY)
+        series_codes_to_ingest: List of series codes to ingest (determined in assets file)
         target_date: Target date for data ingestion (from partition key)
         meta_manager: MetaSeriesManager instance (initialized in asset)
         lookup_manager: LookupTableManager instance (initialized in asset)
+        series_code: Optional series code from partition (for daily mode return logic)
 
     Returns:
         Result dictionary with ingestion results, or None if skipped/failed.
-        For IngestionMode.BULK, returns aggregate result.
+        For IngestionMode.BACKFILL, returns aggregate result.
     """
-    # Resolve series codes based on mode
-    series_codes_to_ingest = resolve_series_codes(config, series_code, target_date, context)
     if not series_codes_to_ingest:
+        context.log.error(
+            "series_codes_to_ingest is empty",
+            extra={
+                "mode": config.mode.value,
+                "target_date": target_date.date().isoformat(),
+            },
+        )
         return None
 
     # Build and validate series metadata
@@ -716,14 +717,6 @@ def ingest_bloomberg_data_for_series(
         failed_count += field_failed
         total_rows += field_rows
 
-    # Return result based on mode
-    if config.mode == IngestionMode.DAILY:
-        # For daily mode, return single result
-        if series_code in all_results:
-            return all_results[series_code]
-        return None
-    else:  # mode == IngestionMode.BULK
-        # For bulk mode, return aggregate result
         return finalize_bulk_result(
             config, all_results, successful_count, failed_count, total_rows, target_date, context
         )

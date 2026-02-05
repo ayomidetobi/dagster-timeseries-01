@@ -14,7 +14,6 @@ from dagster_quickstart.utils.constants import (
     S3_BASE_PATH_VALUE_DATA,
     S3_PARQUET_FILE_NAME,
     S3_PARTITION_SERIES_CODE,
-    S3_VERSION_PREFIX,
 )
 from dagster_quickstart.utils.exceptions import DatabaseQueryError
 
@@ -40,7 +39,7 @@ def build_s3_control_table_path(
         Relative S3 path (e.g., 'control/lookup/version-2026-01-12/data.parquet')
     """
     # Use 'version-' instead of 'version=' to avoid URL encoding issues with DuckDB httpfs
-    return f"{S3_BASE_PATH_CONTROL}/{control_type}/{S3_VERSION_PREFIX}{version_date}/{filename}"
+    return f"{S3_BASE_PATH_CONTROL}/{control_type}/{filename}"
 
 
 def build_s3_value_data_path(series_code: str, filename: str = S3_PARQUET_FILE_NAME) -> str:
