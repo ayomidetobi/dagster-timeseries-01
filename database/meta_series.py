@@ -23,7 +23,7 @@ from dagster_quickstart.utils.helpers import (
     build_full_s3_path,
     build_s3_control_table_path,
 )
-from database.models import DataSource
+from database.schema import DataSource
 from database.utils import DatabaseResource, query_to_dict, query_to_dict_list
 
 # Constants
@@ -118,6 +118,43 @@ class MetaSeriesManager:
 
         result = self.database.execute_query(query, parameters=params)
         return query_to_dict_list(result)
+
+    def get_all_active_series_codes(
+        self,
+        ticker_source: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> List[str]:
+        """Get all active series codes from metaSeries table.
+
+        Queries DuckDB view over S3 control table to get all active series codes.
+        Useful for daily ingestion when series_codes are not provided in config.
+
+        Note: The view may not have an is_active column, so we filter by series_code existence only.
+
+        Args:
+            ticker_source: Optional ticker source name filter (e.g., "Bloomberg")
+            limit: Optional limit on number of results
+
+        Returns:
+            List of active series codes
+        """
+        query = f"SELECT DISTINCT series_code FROM {META_SERIES_TABLE} WHERE series_code IS NOT NULL AND series_code != ''"
+        params: List[Any] = []
+
+        if ticker_source:
+            query += " AND ticker_source = ?"
+            params.append(ticker_source)
+
+        query += " ORDER BY series_code"
+
+        if limit:
+            query += " LIMIT ?"
+            params.append(limit)
+
+        result = self.database.execute_query(query, parameters=params if params else None)
+        if result is None or result.empty:
+            return []
+        return result["series_code"].tolist() if "series_code" in result.columns else []
 
     def get_or_validate_meta_series(
         self,

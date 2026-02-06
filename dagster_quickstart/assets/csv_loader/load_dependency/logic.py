@@ -13,17 +13,22 @@ from typing import TYPE_CHECKING, Any, Dict, Tuple
 from dagster import AssetExecutionContext
 
 from dagster_quickstart.resources import DuckDBResource
-from dagster_quickstart.utils.constants import NULL_VALUE_REPRESENTATION
-from dagster_quickstart.utils.helpers import (
-    load_csv_to_temp_table,
-    unregister_temp_table,
-    validate_referential_integrity_sql,
-)
+from dagster_quickstart.utils.constants import S3_CONTROL_DEPENDENCY, S3_PARQUET_FILE_NAME
+from dagster_quickstart.utils.csv_loader_helpers import process_csv_to_s3_with_validation
+from dagster_quickstart.utils.duckdb_helpers import unregister_temp_table
+from dagster_quickstart.utils.s3_helpers import build_full_s3_path, build_s3_control_table_path
+from dagster_quickstart.utils.validation_helpers import validate_referential_integrity_sql
 
 if TYPE_CHECKING:
     from database.dependency import DependencyManager
 
     from .config import SeriesDependencyCSVConfig
+
+from database.ddl import (
+    DEPENDENCY_ENRICHED_TABLE_QUERY,
+    DEPENDENCY_RESULTS_QUERY,
+    DEPENDENCY_VALIDATION_QUERY,
+)
 
 
 def load_series_dependencies_logic(
@@ -36,7 +41,8 @@ def load_series_dependencies_logic(
 ) -> Tuple[Dict[str, Any], Dict[str, int]]:
     """Load series dependencies from CSV file and write to S3 control table.
 
-    Data flow: CSV → DuckDB temp table (via read_csv) → validation → S3 Parquet control table (versioned)
+    Data flow: CSV → DuckDB temp table (via process_csv_to_s3_with_validation) →
+    validation → enrichment (series IDs) → S3 Parquet control table (versioned).
     DuckDB views are updated to point to the latest S3 control table version.
 
     Args:
@@ -75,6 +81,8 @@ def _validate_dependencies_against_meta_series(
 ) -> None:
     """Validate that parent_series_code and child_series_code exist in metaSeries.
 
+    Uses validate_referential_integrity_sql for consistent SQL-based validation.
+
     Args:
         context: Dagster execution context.
         duckdb: DuckDB resource.
@@ -82,23 +90,10 @@ def _validate_dependencies_against_meta_series(
         version_date: Version date for this run.
 
     Raises:
-        Exception: If validation fails.
+        ReferentialIntegrityError: If validation fails.
     """
     # Build validation query to check that both parent and child series codes exist
-    validation_query = f"""
-    SELECT 
-        d.parent_series_code,
-        d.child_series_code,
-        CASE 
-            WHEN p.series_id IS NULL THEN 'Parent series not found: ' || d.parent_series_code
-            WHEN c.series_id IS NULL THEN 'Child series not found: ' || d.child_series_code
-            ELSE NULL
-        END AS error_message
-    FROM {temp_table} d
-    LEFT JOIN metaSeries p ON d.parent_series_code = p.series_code
-    LEFT JOIN metaSeries c ON d.child_series_code = c.series_code
-    WHERE p.series_id IS NULL OR c.series_id IS NULL
-    """
+    validation_query = DEPENDENCY_VALIDATION_QUERY.format(temp_table=temp_table)
 
     validate_referential_integrity_sql(
         duckdb=duckdb,
@@ -223,19 +218,11 @@ def _build_enriched_table_query(
     calc_type_expr = "d.calc_type" if "calc_type" in available_columns else "NULL AS calc_type"
 
     # Build CREATE TABLE query with series IDs mapped from codes
-    create_query = f"""
-    CREATE TEMP TABLE {enriched_table} AS
-    SELECT 
-        row_number() OVER (ORDER BY p.series_id, c.series_id) AS dependency_id,
-        d.parent_series_code,
-        d.child_series_code,
-        p.series_id AS parent_series_id,
-        c.series_id AS child_series_id,
-        {calc_type_expr}
-    FROM {temp_table} d
-    INNER JOIN metaSeries p ON d.parent_series_code = p.series_code
-    INNER JOIN metaSeries c ON d.child_series_code = c.series_code
-    """
+    create_query = DEPENDENCY_ENRICHED_TABLE_QUERY.format(
+        enriched_table=enriched_table,
+        temp_table=temp_table,
+        calc_type_expr=calc_type_expr,
+    )
     return create_query
 
 
@@ -293,30 +280,6 @@ def _map_series_codes_to_ids(
         raise DatabaseQueryError(error_msg) from e
 
 
-def _load_dependencies_csv_to_temp_table(
-    context: AssetExecutionContext,
-    duckdb: DuckDBResource,
-    csv_path: str,
-) -> str:
-    """Load series dependencies CSV file into a DuckDB temporary table.
-
-    Args:
-        context: Dagster execution context.
-        duckdb: DuckDB resource.
-        csv_path: Path to CSV file.
-
-    Returns:
-        Name of the temporary table containing the CSV data.
-
-    Raises:
-        CSVValidationError: If CSV cannot be read.
-    """
-    context.log.info("Loading dependencies CSV from %s into temporary table", csv_path)
-    temp_table = load_csv_to_temp_table(duckdb, csv_path, NULL_VALUE_REPRESENTATION, context)
-    context.log.info("Loaded CSV into temporary table: %s", temp_table)
-    return temp_table
-
-
 def _enrich_dependencies_with_series_ids(
     context: AssetExecutionContext,
     duckdb: DuckDBResource,
@@ -344,28 +307,131 @@ def _enrich_dependencies_with_series_ids(
     return enriched_table
 
 
-def _save_dependencies_to_s3_control_table(
+def _enrich_and_save_dependencies(
     context: AssetExecutionContext,
     duckdb: DuckDBResource,
-    enriched_table: str,
+    temp_table: str,
     version_date: str,
     dependency_manager: "DependencyManager",  # type: ignore[name-defined]
-) -> None:
-    """Save enriched dependency data to S3 control table (versioned, immutable).
+    meta_manager: Any,
+) -> str:
+    """Enrich dependency data with series IDs, save to S3 control table, and return S3 path.
+
+    This helper is designed to be used as save_to_s3_func with process_csv_to_s3_with_validation.
+    It:
+      - enriches codes with IDs
+      - writes to S3 control table via DependencyManager
+      - builds and logs dependency_id -> row_index results
+    """
+    enriched_table: str | None = None
+    try:
+        # Optional: enable referential integrity check here if desired
+        # _validate_dependencies_against_meta_series(context, duckdb, temp_table, version_date)
+
+        # Enrich with series IDs by mapping codes to IDs from metaSeries
+        enriched_table = _enrich_dependencies_with_series_ids(context, duckdb, temp_table)
+
+        # Write enriched data to S3 control table
+        relative_path = dependency_manager.save_dependencies_to_s3(
+            duckdb, enriched_table, version_date, context
+        )
+
+        # Build results dictionary (dependency_id -> row_index)
+        results = _build_dependency_results(context, duckdb, enriched_table)
+        context.log.info(
+            "Successfully processed %d dependency records",
+            len(results),
+            extra={"record_count": len(results), "s3_path": relative_path},
+        )
+
+        return relative_path
+    finally:
+        # Clean up enriched temp table; the original temp_table is managed by the CSV helper
+        if enriched_table:
+            unregister_temp_table(duckdb, enriched_table, context)
+
+
+def make_dependency_save_wrapper(
+    context: AssetExecutionContext,
+    dependency_manager: "DependencyManager",  # type: ignore[name-defined]
+    meta_manager: Any,  # MetaSeriesManager
+) -> Any:
+    """Create save_to_s3_wrapper function for dependency processing.
+
+    Returns a wrapper function that matches the expected signature for
+    process_csv_to_s3_with_validation's save_to_s3_func parameter.
 
     Args:
-        context: Dagster execution context.
-        duckdb: DuckDB resource with S3 access.
-        enriched_table: Name of enriched temporary table with series IDs.
-        version_date: Version date for this run.
-        dependency_manager: DependencyManager instance.
+        context: Dagster execution context (for closure)
+        dependency_manager: DependencyManager instance
+        meta_manager: MetaSeriesManager instance
 
-    Raises:
-        DatabaseQueryError: If write operation fails.
+    Returns:
+        Wrapper function with signature:
+        Callable[[DuckDBResource, str, str, Optional[AssetExecutionContext]], str]
     """
-    context.log.info(f"Saving dependencies to S3 control table (version: {version_date})")
-    dependency_manager.save_dependencies_to_s3(duckdb, enriched_table, version_date, context)
-    context.log.info("Successfully saved dependencies to S3 control table")
+
+    # Signature must match: Callable[[DuckDBResource, str, str, Optional[AssetExecutionContext]], str]
+    def save_to_s3_wrapper(
+        duckdb_res: DuckDBResource,
+        temp_table: str,
+        version: str,
+        ctx: AssetExecutionContext | None = None,
+        **kwargs: Any,
+    ) -> str:
+        # ctx is ignored because we already close over context, but signature must match
+        return _enrich_and_save_dependencies(
+            context, duckdb_res, temp_table, version, dependency_manager, meta_manager
+        )
+
+    return save_to_s3_wrapper
+
+
+def build_dependency_results_from_s3(
+    duckdb: DuckDBResource,
+    version_date: str,
+    context: AssetExecutionContext,
+) -> Dict[str, int]:
+    """Build results dictionary (dependency_id -> row_index) from saved S3 control table.
+
+    Reads from S3 control table and computes row_index based on saved order.
+
+    Args:
+        duckdb: DuckDB resource with S3 access
+        version_date: Version date for S3 path construction
+        context: Dagster execution context for logging
+
+    Returns:
+        Dictionary mapping dependency_id -> row_index
+    """
+    # Build S3 path
+    control_relative = build_s3_control_table_path(
+        S3_CONTROL_DEPENDENCY, version_date, S3_PARQUET_FILE_NAME
+    )
+    full_s3_path = build_full_s3_path(duckdb, control_relative)
+
+    # Query S3 to build dependency_id -> row_index mapping
+    # dependency_id is already computed when writing to S3, so we just select it ordered
+    # row_index is computed in Python via enumerate() to avoid double row_number() computation
+    query = f"""
+    SELECT 
+        dependency_id
+    FROM read_parquet('{full_s3_path}')
+    ORDER BY parent_series_id, child_series_id
+    """
+    result = duckdb.execute_query(query)
+
+    if result is None or result.empty:
+        context.log.warning("No dependency records found in saved S3 control table")
+        return {}
+
+    results: Dict[str, int] = {}
+    # Enumerate in Python to compute row_index (1-based), avoiding double row_number() in SQL
+    for idx, row in enumerate(result.itertuples(index=False), start=1):
+        dep_id = int(row.dependency_id)
+        results[str(dep_id)] = idx
+
+    return results
 
 
 def process_csv_to_s3_control_table_dependencies(
@@ -378,8 +444,12 @@ def process_csv_to_s3_control_table_dependencies(
 ) -> Dict[str, int]:
     """Process series dependencies from CSV to S3 control table (versioned, immutable).
 
-    Orchestrates the complete data flow:
-    CSV → DuckDB temp table → enrichment (series IDs) → S3 Parquet control table
+    Orchestrates the complete data flow via process_csv_to_s3_with_validation:
+    CSV → DuckDB temp table → (optional validation) → enrichment (series IDs) → S3 Parquet control table
+
+    Uses the generic CSV helper (process_csv_to_s3_with_validation) for CSV loading,
+    optional validation, and temp table cleanup. Enrichment and S3 writing are handled
+    by _enrich_and_save_dependencies.
 
     Args:
         context: Dagster execution context.
@@ -399,31 +469,33 @@ def process_csv_to_s3_control_table_dependencies(
     """
     context.log.info("Processing series dependencies from CSV to S3 control table (versioned)")
 
-    # Step 1: Load CSV directly into DuckDB temp table
-    temp_table = _load_dependencies_csv_to_temp_table(context, duckdb, csv_path)
+    # Create wrapper function for saving to S3
+    save_to_s3_wrapper = make_dependency_save_wrapper(context, dependency_manager, meta_manager)
 
-    enriched_table = None
-    try:
-        # Step 2: Validate referential integrity - check that series codes exist
-        # Skipped for now - can be re-enabled later if needed
-        # _validate_dependencies_against_meta_series(context, duckdb, temp_table, version_date)
+    # Use the generic CSV helper for:
+    # - CSV → temp table
+    # - optional validation (currently disabled for dependencies)
+    # - enrich + save to S3
+    # - temp table cleanup
+    relative_path = process_csv_to_s3_with_validation(
+        context=context,
+        duckdb=duckdb,
+        csv_path=csv_path,
+        version_date=version_date,
+        save_to_s3_func=save_to_s3_wrapper,
+        create_view_func=None,  # view creation is handled in the asset
+        validation_func=None,  # _validate_dependencies_against_meta_series can be plugged in later
+        view_creation_enabled=False,
+    )
 
-        # Step 3: Enrich with series IDs by mapping codes to IDs from metaSeries
-        enriched_table = _enrich_dependencies_with_series_ids(context, duckdb, temp_table)
+    # Build results dictionary from saved S3 data
+    results = build_dependency_results_from_s3(duckdb, version_date, context)
 
-        # Step 4: Write validated and enriched data to S3 control table (versioned, immutable)
-        dependency_manager.save_dependencies_to_s3(duckdb, enriched_table, version_date, context)
-
-        # Step 5: Build results dictionary (dependency_id -> row_index)
-        results = _build_dependency_results(context, duckdb, enriched_table)
-
-        context.log.info(f"Successfully processed {len(results)} dependency records")
-        return results
-    finally:
-        # Clean up temp tables
-        if enriched_table:
-            unregister_temp_table(duckdb, enriched_table, context)
-        unregister_temp_table(duckdb, temp_table, context)
+    context.log.info(
+        "Built dependency_id -> row_index mapping from S3 control table",
+        extra={"record_count": len(results), "s3_path": relative_path},
+    )
+    return results
 
 
 def _build_dependency_results(
@@ -443,21 +515,16 @@ def _build_dependency_results(
     Returns:
         Dictionary mapping dependency_id -> row_index (1-based).
     """
-    query = f"""
-    SELECT 
-        row_number() OVER (ORDER BY parent_series_id, child_series_id) AS dependency_id,
-        row_number() OVER (ORDER BY parent_series_id, child_series_id) AS row_index
-    FROM {temp_table}
-    """
+    query = DEPENDENCY_RESULTS_QUERY.format(temp_table=temp_table)
 
     result = duckdb.execute_query(query)
     if result is None or result.empty:
         return {}
 
     results = {}
-    for _, row in result.iterrows():
-        dependency_id = int(row["dependency_id"])
-        row_index = int(row["row_index"])
-        results[str(dependency_id)] = row_index
+    # Enumerate in Python to compute row_index (1-based), avoiding double row_number() in SQL
+    for idx, row in enumerate(result.itertuples(index=False), start=1):
+        dependency_id = int(row.dependency_id)
+        results[str(dependency_id)] = idx
 
     return results

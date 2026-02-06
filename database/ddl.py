@@ -82,13 +82,13 @@ EXTRACT_LOOKUP = """
 
 # Template for building meta series results query (series_code -> row_index)
 # Placeholders: {temp_table}
+# Note: row_index is computed in Python via enumerate() to avoid double row_number() computation
 META_SERIES_RESULTS_QUERY = """
         SELECT 
-            series_code,
-            row_number() OVER (ORDER BY (SELECT NULL)) AS row_index
+            series_code
         FROM {temp_table}
         WHERE series_code IS NOT NULL AND series_code != ''
-        ORDER BY row_index
+        ORDER BY series_code
     """
 
 # Template for meta series validation condition (single lookup type check)
@@ -147,3 +147,51 @@ READ_PARQUET_SCHEMA = "SELECT * FROM read_parquet('{full_s3_path}') LIMIT 0"
 # Pattern for checking if a column is not null and not empty
 # Placeholders: {column_name}
 NOT_NULL_AND_NOT_EMPTY = "{column_name} IS NOT NULL AND {column_name} != ''"
+
+# ============================================================================
+# Dependency SQL Templates
+# ============================================================================
+
+# Template for dependency validation query (checks referential integrity)
+# Placeholders: {temp_table}
+DEPENDENCY_VALIDATION_QUERY = """
+    SELECT 
+        d.parent_series_code,
+        d.child_series_code,
+        CASE 
+            WHEN p.series_id IS NULL THEN 'Parent series not found: ' || d.parent_series_code
+            WHEN c.series_id IS NULL THEN 'Child series not found: ' || d.child_series_code
+            ELSE NULL
+        END AS error_message
+    FROM {temp_table} d
+    LEFT JOIN metaSeries p ON d.parent_series_code = p.series_code
+    LEFT JOIN metaSeries c ON d.child_series_code = c.series_code
+    WHERE p.series_id IS NULL OR c.series_id IS NULL
+"""
+
+# Template for creating enriched dependency table with series IDs
+# Placeholders: {enriched_table}, {temp_table}, {calc_type_expr}
+DEPENDENCY_ENRICHED_TABLE_QUERY = """
+    CREATE TEMP TABLE {enriched_table} AS
+    SELECT 
+        row_number() OVER (ORDER BY p.series_id, c.series_id) AS dependency_id,
+        d.parent_series_code,
+        d.child_series_code,
+        p.series_id AS parent_series_id,
+        c.series_id AS child_series_id,
+        {calc_type_expr}
+    FROM {temp_table} d
+    INNER JOIN metaSeries p ON d.parent_series_code = p.series_code
+    INNER JOIN metaSeries c ON d.child_series_code = c.series_code
+"""
+
+# Template for building dependency results query (dependency_id -> row_index)
+# Placeholders: {temp_table}
+# Note: row_index is computed in Python via enumerate() to avoid double row_number() computation
+# dependency_id is already computed when writing to S3, so we just select it ordered
+DEPENDENCY_RESULTS_QUERY = """
+    SELECT 
+        dependency_id
+    FROM {temp_table}
+    ORDER BY parent_series_id, child_series_id
+"""
